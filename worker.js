@@ -85,7 +85,7 @@ function loadRuntime(onBytes) {
   if (runtime) return runtime;
   runtime = (async () => {
     const base = new URL('./', self.location.href);
-    const ort = await import(new URL('vendor/ort/ort.wasm.bundle.min.mjs', base).href);
+    const ort = await importRuntime(new URL('vendor/ort/ort.wasm.bundle.min.mjs', base).href);
     const wasm = await cachedDownload(new URL('vendor/ort/ort-wasm-simd-threaded.wasm', base).href, onBytes);
     ort.env.wasm.numThreads = 1; // 多執行緒需要 COOP/COEP 標頭，GitHub Pages 沒有
     ort.env.wasm.wasmBinary = wasm;
@@ -93,6 +93,21 @@ function loadRuntime(onBytes) {
   })();
   runtime.catch(() => { runtime = null; });
   return runtime;
+}
+
+/** 載入 ONNX 執行環境的 JS 模組。行動網路偶爾斷線時 import() 會失敗，而瀏覽器會把同一網址的失敗結果記住
+ *  （之後再 import 也立刻失敗、所有模型一起壞掉），所以失敗時換一個查詢字串重試；Service Worker 的離線快取忽略查詢字串。 */
+async function importRuntime(url) {
+  let err;
+  for (let i = 0; i < 4; i++) {
+    try {
+      return await import(i ? `${url}?retry=${Date.now()}` : url);
+    } catch (e) {
+      err = e;
+      await new Promise((r) => setTimeout(r, 500 * 2 ** i));
+    }
+  }
+  throw err;
 }
 
 function loadModel(file) {
@@ -167,6 +182,8 @@ function prefetchAll() {
       }
       done += mb * 1e6;
     }
+    // 執行環境的 JS 模組也先載一次，讓 Service Worker 把它存進離線快取
+    await loadRuntime(() => {}).catch(() => { failed++; });
     postMessage({ type: 'prefetch', done: true, downloaded, failed, total });
   })().finally(() => { prefetching = null; });
   return prefetching;
