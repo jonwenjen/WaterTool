@@ -27,6 +27,10 @@
       <button class="btn" id="install" type="button">安裝 App</button>
     </div>
   </header>
+  <div class="prefetch" id="prefetch" role="status" hidden>
+    <span id="prefetchText">下載深度模型中…</span>
+    <progress id="prefetchBar" max="1" value="0"></progress>
+  </div>
 
   <main class="layout">
     <section class="stage">
@@ -34,6 +38,7 @@
         <!-- 來源影片放在預覽畫布底下（不用 display:none、不預設靜音）：Android Chrome 會自動暫停「看不見又靜音」的影片 -->
         <video id="video" class="srcvideo" playsinline preload="auto" aria-hidden="true"></video>
         <canvas id="view" width="960" height="540" aria-label="預覽"></canvas>
+        <canvas id="glview" width="960" height="540" aria-label="播放預覽" hidden></canvas>
         <div class="split-handle" id="handle" role="slider" aria-label="分割線位置" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"></div>
         <span class="tag left" id="tagL">原始</span>
         <span class="tag right" id="tagR">還原</span>
@@ -98,7 +103,7 @@
           <div class="ctl"><label for="post">自動色階（後處理） <output id="postV"></output></label><input type="range" id="post" min="0" max="1" step="0.05" value="0"></div>
           <div class="ctl"><label for="prevRes">預覽解析度</label>
             <select id="prevRes"><option value="480">480p（快）</option><option value="720" selected>720p</option><option value="1080">1080p</option></select></div>
-          <p class="note">播放時預覽以 480p 計算；暫停、照片與匯出使用完整設定。</p>
+          <p class="note">播放時由 GPU 即時套用色彩（色彩由完整演算法在小圖上持續更新），畫面跟原片一樣順；暫停、照片與匯出為逐像素完整計算。</p>
           <div class="ctl"><label for="outRes">匯出解析度</label>
             <select id="outRes"><option value="0">原始</option><option value="2160">4K（長邊 3840）</option><option value="1080" selected>1080p</option><option value="720">720p</option></select></div>
         </div>

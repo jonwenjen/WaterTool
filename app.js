@@ -3,6 +3,7 @@ import { METHODS, byId, defaults } from './lib/methods/index.js';
 import { INFO } from './lib/methods/info.js';
 import { syntheticClip } from './lib/synth.js';
 import * as C from './lib/core.js';
+import { GLPlayer } from './player-gl.js';
 
 const $ = (id) => document.getElementById(id);
 const fmtTime = (s) => (Number.isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00');
@@ -22,6 +23,7 @@ function call(msg, transfer = []) {
 worker.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'model') return onModel(m);
+  if (m.type === 'prefetch') return onPrefetch(m);
   const p = pending.get(m.id);
   if (!p) return;
   pending.delete(m.id);
@@ -54,6 +56,7 @@ const view = $('view'), vctx = view.getContext('2d');
 const orig = document.createElement('canvas'), octx = orig.getContext('2d', { willReadFrequently: true });
 const res = document.createElement('canvas'), rctx = res.getContext('2d');
 let hasResult = false;
+let resFresh = false; // res 是否就是 orig 這一格的結果（處理中 orig 已換成新的一格時為 false）
 
 function previewSize() {
   const { w, h } = state.src;
@@ -65,6 +68,7 @@ function previewSize() {
 
 function draw() {
   if (!state.src) return;
+  if (glActive()) { renderGL(); placeOverlay(); return; }
   const w = orig.width, h = orig.height;
   if (view.width !== w || view.height !== h) { view.width = w; view.height = h; }
   const mode = state.view === 'compare' ? 'split' : state.view;
@@ -115,6 +119,7 @@ function grab() {
     orig.height = res.height = h;
   }
   const s = state.src;
+  resFresh = false;
   if (s.kind === 'image') octx.drawImage(s.bitmap, 0, 0, w, h);
   else if (s.kind === 'video') octx.drawImage(video, 0, 0, w, h);
   else {
@@ -140,7 +145,7 @@ function buildOpts(dt) {
 
 let busy = false, again = undefined; // again：處理中又收到的請求（其 dt）
 async function processFrame(dt = null) {
-  if (!state.src) return;
+  if (!state.src || (state.playing && glActive())) return;
   if (busy) { again = dt; return; }
   busy = true;
   $('busy').hidden = false;
@@ -151,6 +156,7 @@ async function processFrame(dt = null) {
       const r = await call({ type: 'process', slot: 'preview', rgba: data.data.buffer, w, h, opts: buildOpts(dt) }, [data.data.buffer]);
       rctx.putImageData(new ImageData(new Uint8ClampedArray(r.rgba), w, h), 0, 0);
       hasResult = true;
+      resFresh = true;
       draw();
       const ms = r.info.ms;
       $('stMethod').innerHTML = `<b>${byId[state.method].name}</b>`;
@@ -192,13 +198,108 @@ async function measure() {
 function resetTemporal() {
   worker.postMessage({ type: 'reset', slot: 'preview' });
   lastMediaTime = null;
+  lastFitTime = null;
+}
+
+// ---------------- GPU 播放（WebGL2） ----------------
+// 播放中：背景執行緒用完整演算法處理一張小圖（長邊 320），擬合成局部色彩轉換係數；
+// 每一格影片由 GPU 套用最新係數，所以畫面跟原片一樣順。暫停時改回完整計算。
+const glview = $('glview');
+const fitCanvas = document.createElement('canvas'), fctx = fitCanvas.getContext('2d', { willReadFrequently: true });
+const FIT_EDGE = 320;
+let gl = null; // null = 還沒試；false = 不支援（改用逐幀處理）
+function glPlayer() {
+  if (gl === null) {
+    try { gl = new GLPlayer(glview); } catch (err) { console.warn('GPU 播放不可用，改用逐幀處理：', err); gl = false; }
+  }
+  return gl || null;
+}
+const glActive = () => !!gl && !glview.hidden;
+const playSource = () => (state.src.kind === 'video' ? video : demo.canvas);
+
+function startGL() {
+  const g = glPlayer();
+  if (!g) return false;
+  let [w, h] = C.fitSize(state.src.w, state.src.h, LONG_EDGE[$('prevRes').value] || 1280);
+  w = w & ~1 || 2;
+  h = h & ~1 || 2;
+  glview.width = view.width = w; // 兩個畫布同尺寸，分割線位置才一致
+  glview.height = view.height = h;
+  g.resetCoeffs();
+  const seeded = hasResult && resFresh && orig.width > 0 ? seedFromPaused() : Promise.resolve();
+  $('stTime').textContent = '播放：GPU 即時套用 · 色彩計算中…';
+  glview.hidden = false;
+  view.hidden = true;
+  renderGL();
+  seeded.finally(fitLoop);
+  return true;
+}
+
+/** 用暫停時的完整結果（orig → res）立即擬合一組係數，播放第一格就有還原後的顏色 */
+async function seedFromPaused() {
+  const [w, h] = C.fitSize(orig.width, orig.height, FIT_EDGE);
+  const take = (cv) => {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    x.drawImage(cv, 0, 0, w, h);
+    return x.getImageData(0, 0, w, h).data.buffer;
+  };
+  try {
+    const src = take(orig), out = take(res);
+    const r = await call({ type: 'fitPair', src, out, w, h }, [src, out]);
+    if (glActive()) gl.setCoeffs(new Float32Array(r.a), new Float32Array(r.b), r.w, r.h);
+  } catch { /* 沒有也沒關係，等第一次更新 */ }
+}
+function renderGL() {
+  if (!glActive()) return;
+  state.glFrames = (state.glFrames || 0) + 1;
+  gl.draw(playSource(), { split: state.split, mode: state.view === 'compare' ? 'split' : state.view });
+}
+function stopGL() {
+  if (!glActive()) return;
+  renderGL(); // 把最後一格複製到 2D 畫布，切換時不閃
+  vctx.drawImage(glview, 0, 0, view.width, view.height);
+  glview.hidden = true;
+  view.hidden = false;
+}
+
+let fitRunning = false, lastFitTime = null;
+async function fitLoop() {
+  if (fitRunning) return;
+  fitRunning = true;
+  try {
+    while (state.playing && glActive()) {
+      const [w, h] = C.fitSize(state.src.w, state.src.h, FIT_EDGE);
+      if (fitCanvas.width !== w || fitCanvas.height !== h) { fitCanvas.width = w; fitCanvas.height = h; }
+      fctx.drawImage(playSource(), 0, 0, w, h);
+      const t = current();
+      const dt = lastFitTime === null ? 0 : Math.max(0, Math.min(0.5, t - lastFitTime));
+      lastFitTime = t;
+      const data = fctx.getImageData(0, 0, w, h);
+      const t0 = performance.now();
+      const r = await call({ type: 'fit', rgba: data.data.buffer, w, h, opts: buildOpts(dt) }, [data.data.buffer]);
+      if (!state.playing || !glActive()) break;
+      gl.setCoeffs(new Float32Array(r.a), new Float32Array(r.b), r.w, r.h);
+      state.fits = (state.fits || 0) + 1;
+      if (state.src.kind === 'demo') renderGL();
+      $('stMethod').innerHTML = `<b>${byId[state.method].name}</b>`;
+      $('stTime').textContent = `播放：GPU 即時套用 · 色彩每 ${(performance.now() - t0).toFixed(0)} ms 由完整演算法更新（${w}×${h}）`;
+    }
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    fitRunning = false;
+  }
 }
 
 // ---------------- 播放 ----------------
 let lastMediaTime = null, demoTimer = 0;
 function onVideoFrame(_now, meta) {
   if (!state.playing) return;
-  if (!busy) {
+  if (glActive()) renderGL();
+  else if (!busy) {
     const t = meta ? meta.mediaTime : video.currentTime;
     const dt = lastMediaTime === null ? 0 : Math.max(0, Math.min(0.5, t - lastMediaTime));
     lastMediaTime = t;
@@ -218,6 +319,7 @@ function play() {
   $('play').textContent = '⏸';
   $('play').setAttribute('aria-label', '暫停');
   resetTemporal();
+  startGL();
   if (state.src.kind === 'video') {
     const p = video.play();
     if (p) p.catch((e) => {
@@ -234,7 +336,15 @@ function play() {
       acc += (now - last) / 1000;
       last = now;
       const adv = Math.floor(acc * demo.fps);
-      if (adv > 0 && !busy) {
+      if (adv > 0 && glActive()) {
+        acc -= adv / demo.fps;
+        const prev = demo.idx;
+        demo.idx = (demo.idx + adv) % demo.frames.length;
+        if (demo.idx < prev) resetTemporal(); // 循環回開頭 = 換鏡頭
+        demo.canvas.getContext('2d').putImageData(demo.frames[demo.idx], 0, 0);
+        renderGL();
+        updateTime();
+      } else if (adv > 0 && !busy) {
         acc -= adv / demo.fps;
         demo.idx = (demo.idx + adv) % demo.frames.length;
         if (demo.idx < lastIdx) resetTemporal(); // 循環回開頭 = 換鏡頭
@@ -252,6 +362,7 @@ function pause() {
   state.playing = false;
   $('play').textContent = '▶';
   $('play').setAttribute('aria-label', '播放');
+  stopGL();
   if (state.src?.kind === 'video') video.pause();
   cancelAnimationFrame(demoTimer);
   resetTemporal();
@@ -265,6 +376,7 @@ video.addEventListener('pause', () => {
 });
 function stopPlaybackUi() {
   state.playing = false;
+  stopGL();
   $('play').textContent = '▶';
   $('play').setAttribute('aria-label', '播放');
   resetTemporal();
@@ -349,6 +461,7 @@ async function openFile(file) {
 function pause0() {
   if (state.playing) {
     state.playing = false;
+    stopGL();
     video.pause();
     cancelAnimationFrame(demoTimer);
     $('play').textContent = '▶';
@@ -570,6 +683,28 @@ function onModel(m) {
     showModelNote('模型載入失敗：' + m.message, true);
   }
 }
+// ---------------- 預先下載全部模型 ----------------
+// 第一次開啟就在背景把 ONNX 執行環境與 5 個深度模型存進本機（已存在的略過），之後選用免等待、可離線。
+function onPrefetch(m) {
+  const box = $('prefetch'), bar = $('prefetchBar');
+  if (!m.done) {
+    box.hidden = false;
+    bar.hidden = false;
+    bar.value = m.total ? Math.min(1, m.got / m.total) : 0;
+    $('prefetchText').textContent = `第一次使用：下載深度模型存到本機 ${(m.got / 1e6).toFixed(1)} / ${(m.total / 1e6).toFixed(0)} MB（之後不用再下載）`;
+    return;
+  }
+  if (!m.downloaded && !m.failed) { box.hidden = true; return; }
+  bar.hidden = true;
+  box.hidden = false;
+  $('prefetchText').textContent = m.failed
+    ? `有 ${m.failed} 個模型下載失敗，選用時會再試一次。`
+    : '5 個深度模型都已存在本機，之後可離線使用。';
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  setTimeout(() => { box.hidden = true; }, 5000);
+}
+setTimeout(() => worker.postMessage({ type: 'prefetch' }), 1000);
+
 function showModelNote(text, err = false) {
   const n = $('modelState');
   n.hidden = false;
@@ -823,4 +958,4 @@ renderMethods();
 renderParams();
 renderAbout();
 placeOverlay();
-window.__watertool = { state, call }; // 給自動化測試用
+window.__watertool = { state, call, renderGL }; // 給自動化測試用

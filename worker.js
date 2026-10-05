@@ -7,7 +7,8 @@
 //   { type:'loadModel', file } → { type:'model', file, state:'progress'|'ready'|'error', ... }
 import * as C from './lib/core.js';
 import { Processor } from './lib/pipeline.js';
-import { byId, defaults } from './lib/methods/index.js';
+import { METHODS, byId, defaults } from './lib/methods/index.js';
+import { affine } from './lib/methods/net.js';
 import { uiqm, uciqe } from './lib/metrics.js';
 
 const sessions = new Map(); // 模型檔 → InferenceSession
@@ -26,7 +27,17 @@ let runtime = null;
 // 只有這兩個檔案本身改變時才改 MODEL_CACHE 的版本號（sw.js 也用同一個名字）。
 const MODEL_CACHE = 'watertool-models-v1';
 
-async function cachedDownload(url, onBytes) {
+const inflight = new Map(); // 同一個檔案同時只下載一次（預先下載與選用方法可能同時要）
+function cachedDownload(url, onBytes) {
+  if (!inflight.has(url)) {
+    const p = cachedDownloadOnce(url, onBytes);
+    inflight.set(url, p);
+    p.finally(() => inflight.delete(url)).catch(() => {});
+  }
+  return inflight.get(url);
+}
+
+async function cachedDownloadOnce(url, onBytes) {
   const cache = await openModelCache();
   const hit = cache && (await cache.match(url).catch(() => null));
   if (hit) {
@@ -116,11 +127,57 @@ async function ensureModel(method) {
   if (m?.needsModel && !sessions.has(m.model.file)) await loadModel(m.model.file);
 }
 
+let lastFit = null;
+/** 原圖 → 結果 的逐通道局部仿射係數（RGBA float32，可直接上傳成紋理）；非換鏡頭時與上一組做輕度平滑 */
+function fitCoeffs(src, out, cut) {
+  const { w, h } = src, n = w * h, r = Math.max(2, Math.round(Math.max(w, h) / 32));
+  const A = new Float32Array(n * 4), B = new Float32Array(n * 4);
+  for (let c = 0; c < 3; c++) {
+    const [ac, bc] = affine(src.c[c], out.c[c], w, h, r, 1e-4);
+    for (let i = 0; i < n; i++) { A[i * 4 + c] = ac[i]; B[i * 4 + c] = bc[i]; }
+  }
+  if (lastFit && !cut && lastFit.a.length === A.length) {
+    for (let i = 0; i < A.length; i++) {
+      A[i] = lastFit.a[i] + (A[i] - lastFit.a[i]) * 0.6;
+      B[i] = lastFit.b[i] + (B[i] - lastFit.b[i]) * 0.6;
+    }
+  }
+  lastFit = { a: A.slice(), b: B.slice() };
+  return { a: A, b: B };
+}
+
+/** 第一次開啟：把 ONNX 執行環境與所有模型下載進本機快取（已存在的會略過，不建立推論 session） */
+let prefetching = null;
+function prefetchAll() {
+  if (prefetching) return prefetching;
+  prefetching = (async () => {
+    const base = new URL('./', self.location.href);
+    const files = [['vendor/ort/ort-wasm-simd-threaded.wasm', 14.2], ...METHODS.filter((m) => m.needsModel).map((m) => [m.model.file, m.model.mb])];
+    const total = files.reduce((s, f) => s + f[1], 0) * 1e6;
+    let done = 0, downloaded = false, failed = 0;
+    for (const [file, mb] of files) {
+      try {
+        await cachedDownload(new URL(file, base).href, (got, _t, cached) => {
+          if (cached) return;
+          downloaded = true;
+          postMessage({ type: 'prefetch', got: done + got, total, file });
+        });
+      } catch {
+        failed++;
+      }
+      done += mb * 1e6;
+    }
+    postMessage({ type: 'prefetch', done: true, downloaded, failed, total });
+  })().finally(() => { prefetching = null; });
+  return prefetching;
+}
+
 self.onmessage = async (e) => {
   const m = e.data;
   try {
     if (m.type === 'reset') {
       (slots[m.slot] || slots.preview).reset();
+      if (m.slot !== 'export') lastFit = null;
     } else if (m.type === 'loadModel') {
       await loadModel(m.file).catch(() => {});
     } else if (m.type === 'process') {
@@ -129,6 +186,21 @@ self.onmessage = async (e) => {
       const r = await slots[m.slot || 'preview'].run(img, m.opts);
       const rgba = C.toRGBA(r.out);
       postMessage({ type: 'result', id: m.id, rgba: rgba.buffer, w: m.w, h: m.h, info: { ms: r.ms, cut: r.cut, estimated: r.estimated } }, [rgba.buffer]);
+    } else if (m.type === 'fit') {
+      // 播放用：小圖完整處理 → 擬合局部仿射色彩轉換，交給 GPU 套到每一格
+      await ensureModel(m.opts.method);
+      const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
+      const r = await slots.preview.run(img, m.opts);
+      const { a, b } = fitCoeffs(img, r.out, r.cut);
+      postMessage({ type: 'fit', id: m.id, a: a.buffer, b: b.buffer, w: m.w, h: m.h, info: { ms: r.ms, cut: r.cut } }, [a.buffer, b.buffer]);
+    } else if (m.type === 'fitPair') {
+      // 播放一開始：直接用暫停畫面已算好的完整結果擬合係數（不必等方法重算，深度模型也立即有顏色）
+      const src = C.fromRGBA(new Uint8ClampedArray(m.src), m.w, m.h), out = C.fromRGBA(new Uint8ClampedArray(m.out), m.w, m.h);
+      lastFit = null;
+      const { a, b } = fitCoeffs(src, out, true);
+      postMessage({ type: 'fit', id: m.id, a: a.buffer, b: b.buffer, w: m.w, h: m.h }, [a.buffer, b.buffer]);
+    } else if (m.type === 'prefetch') {
+      await prefetchAll();
     } else if (m.type === 'compare') {
       const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
       const tiles = [];

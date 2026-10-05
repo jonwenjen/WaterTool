@@ -23,7 +23,7 @@ jobs:
       - name: 只放網站需要的檔案
         run: |
           mkdir _site
-          cp -r index.html app.js worker.js style.css sw.js manifest.webmanifest icons lib models vendor _site/
+          cp -r index.html app.js player-gl.js worker.js style.css sw.js manifest.webmanifest icons lib models vendor _site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
