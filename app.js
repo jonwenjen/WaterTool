@@ -464,7 +464,8 @@ function selectMethod(id) {
   renderParams();
   for (const t of document.querySelectorAll('.tile')) t.classList.toggle('on', t.querySelector('.nm')?.textContent === byId[id].name);
   if (byId[id].needsModel && !state.modelReady) {
-    showModelNote('第一次使用會下載 FUnIE-GAN 模型與 ONNX 執行環境（約 28 MB），之後由瀏覽器快取。');
+    worker.postMessage({ type: 'loadModel' }); // 選了就開始載入，不必等有畫面
+    showModelNote('第一次使用會下載 FUnIE-GAN 模型與 ONNX 執行環境（約 28 MB），存在本機後就不用再下載；之後只需約 1～2 秒載入。');
     // 影片預設每 4 幀重算一次網路（其餘幀沿用並平滑係數）
     if (+$('tEvery').value === 1) setRange('tEvery', 4);
   }
@@ -527,7 +528,9 @@ function onModel(m) {
     showModelNote(`下載模型中… ${(m.got / 1e6).toFixed(1)} MB${pct}`);
   } else if (m.state === 'ready') {
     state.modelReady = true;
-    showModelNote('模型已載入（WASM）。');
+    showModelNote(m.fromCache ? '模型已從本機載入（不需下載）。' : '模型已下載並存在本機，之後不用再下載。');
+    // 請瀏覽器把資料列為永久儲存，空間不足時較不會被清除（瀏覽器可能自動決定或忽略）
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     setTimeout(() => { $('modelState').hidden = true; }, 2500);
   } else if (m.state === 'error') {
     showModelNote('模型載入失敗：' + m.message, true);
