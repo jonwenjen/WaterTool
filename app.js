@@ -471,6 +471,8 @@ function setSource(src) {
   state.src = src;
   hasResult = false;
   $('empty').hidden = true;
+  // 播放區跟著影片比例（直式影片也能看到全貌）；太高時由 CSS max-height 限制，畫面以 contain 縮放
+  viewer.style.aspectRatio = `${src.w} / ${src.h}`;
   $('play').disabled = $('seek').disabled = src.kind === 'image';
   $('mute').disabled = src.kind !== 'video';
   video.hidden = src.kind !== 'video';

@@ -62,9 +62,10 @@ a { color: var(--accent); }
 
 .viewer {
   position: relative; background: #000; border-radius: var(--radius); overflow: hidden;
-  aspect-ratio: 16 / 9; display: grid; place-items: center; touch-action: none;
+  width: 100%; aspect-ratio: 16 / 9; max-height: 72vh; max-height: 72svh; display: grid; place-items: center; touch-action: none;
 }
-.viewer canvas { width: 100%; height: 100%; object-fit: contain; display: block; position: relative; z-index: 1; }
+/* 畫布絕對定位：直式影片的畫布不會把格線撐高（否則超出的部分被裁掉，只看得到局部） */
+.viewer canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; z-index: 1; }
 .viewer .srcvideo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; z-index: 0; pointer-events: none; }
 .split-handle {
   position: absolute; top: 0; bottom: 0; left: 50%; width: 28px; margin-left: -14px; cursor: ew-resize; outline: none;
