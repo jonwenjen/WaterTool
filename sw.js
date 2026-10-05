@@ -1,5 +1,5 @@
 // 離線快取：程式檔「網路優先」（更新立即生效），大型檔案（模型、WASM、mediabunny）「快取優先」。
-const CACHE = 'watertool-v1';
+const CACHE = 'watertool-v2';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'worker.js', 'manifest.webmanifest', 'icons/icon.svg',
   'lib/core.js', 'lib/pipeline.js', 'lib/temporal.js', 'lib/metrics.js', 'lib/synth.js',
   'lib/methods/index.js', 'lib/methods/info.js', 'lib/methods/ancuti.js', 'lib/methods/mlle.js', 'lib/methods/ulap.js',

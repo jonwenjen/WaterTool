@@ -151,3 +151,14 @@ progress { width: 100%; margin-top: 10px; accent-color: var(--accent); }
 .about details:first-child { border-top: 0; }
 .about summary { cursor: pointer; font-weight: 600; }
 .about p { margin: 6px 0; font-size: 12.5px; color: var(--muted); }
+
+.dialog {
+  max-width: min(440px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--card); color: var(--text); padding: 18px;
+}
+.dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.dialog h2 { color: var(--text); font-size: 16px; }
+.dialog ol { padding-left: 20px; margin: 8px 0; }
+.dialog li { margin: 6px 0; }
+.dialog p { color: var(--muted); font-size: 13px; }
+.dialog .url { word-break: break-all; color: var(--accent); user-select: all; }

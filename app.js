@@ -731,19 +731,53 @@ function showError(msg) {
 }
 
 // ---------------- PWA ----------------
+// 「安裝 App」一直顯示（已安裝則隱藏）：瀏覽器支援就直接跳安裝視窗，否則依裝置與瀏覽器說明該怎麼做。
 let installEvt = null;
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+$('install').hidden = standalone();
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   installEvt = e;
-  $('install').hidden = false;
 });
+window.addEventListener('appinstalled', () => { $('install').hidden = true; });
 $('install').onclick = async () => {
-  if (!installEvt) return;
-  installEvt.prompt();
-  await installEvt.userChoice;
-  installEvt = null;
-  $('install').hidden = true;
+  if (installEvt) {
+    installEvt.prompt();
+    const { outcome } = await installEvt.userChoice;
+    installEvt = null;
+    if (outcome === 'accepted') $('install').hidden = true;
+    return;
+  }
+  $('installText').innerHTML = installHelp(navigator.userAgent);
+  $('installHelp').showModal();
 };
+$('installClose').onclick = () => $('installHelp').close();
+
+export function installHelp(ua) {
+  const url = location.href.split('#')[0];
+  const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const inApp = /FBAN|FBAV|Instagram|Line\/|MicroMessenger|GitHub|Claude|; wv\)|WebView/i.test(ua);
+  const step = (t) => `<li>${t}</li>`;
+  if (inApp) {
+    return `<p>你現在是在其他 App 裡的內建瀏覽器開啟，這種瀏覽器不能安裝 App。</p><ol>${
+      step('按右上角選單（⋮ 或 ⋯），選「用瀏覽器開啟」' + (ios ? '（Safari）' : '（Chrome）') + '；或複製下面的網址貼到瀏覽器。') +
+      step(ios ? '在 Safari 按下方「分享」□↑ → 「加入主畫面」。' : '在 Chrome 按右上角 ⋮ → 「安裝應用程式」或「加到主畫面」。')
+    }</ol><p class="url">${url}</p>`;
+  }
+  if (ios) {
+    return /CriOS|FxiOS|EdgiOS/.test(ua)
+      ? `<ol>${step('iPhone / iPad 的 Chrome、Edge 也可以：按網址列旁的「分享」□↑。') + step('選「加入主畫面」→「新增」。')}</ol>`
+      : `<ol>${step('在 Safari 按下方（或上方）的「分享」□↑。') + step('往下滑，選「加入主畫面」→ 右上角「新增」。')}</ol><p>iPhone 不會出現「安裝應用程式」，「加入主畫面」就是安裝。</p>`;
+  }
+  if (/SamsungBrowser/.test(ua)) return `<ol>${step('按右下角選單 ≡。') + step('選「新增頁面至」→「主畫面」。')}</ol>`;
+  if (/Firefox/.test(ua)) return `<ol>${step('按右上角 ⋮。') + step('選「安裝」或「加到主畫面」。')}</ol>`;
+  if (/Android/.test(ua)) {
+    return `<ol>${step('按 Chrome 右上角 ⋮。') + step('選「安裝應用程式」；若只看到「加到主畫面」，選它再選「安裝」也一樣。')}</ol>` +
+      '<p>若兩者都沒有：確認不是無痕分頁，並重新整理頁面再試一次（Chrome 需要先完整載入一次）。</p>';
+  }
+  return `<ol>${step('Chrome / Edge：網址列右側的「安裝」圖示 ⊕，或選單 ⋮ →「投放、儲存及分享」→「安裝網頁應用程式」。') + step('Safari（macOS）：「檔案」→「加入 Dock」。')}</ol>`;
+}
+
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
