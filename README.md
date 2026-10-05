@@ -1,13 +1,13 @@
 # 🌊 WaterTool — 水下影片還原工作台
 
-把網路上**有論文、有 GitHub 原始碼**的水下影像還原方法整理出 12 種，重新實作成一個**純瀏覽器**的 App：
+把網路上**有論文、有 GitHub 原始碼**的水下影像還原方法整理出 14 種，重新實作成一個**純瀏覽器**的 App：
 開啟水下影片或照片 → 選方法 → 分割畫面即時比較 → 匯出 MP4 / PNG。
 影片另外加了**時間一致性**（防閃爍），因為逐幀方法直接套在影片上最常見的問題就是閃爍。
 
 - **不上傳、不需伺服器**：所有運算在本機瀏覽器的背景執行緒完成。
 - **可安裝成 App**（PWA）：手機「加到主畫面」、桌面 Chrome「安裝」，安裝後可離線使用。
-- **12 種方法**：7 種傳統（物理模型 / 增強）+ 5 個深度學習模型（FUnIE-GAN 與 4 個 UIEB 訓練模型，ONNX 在瀏覽器執行）。
-- **每種方法都有客觀評測**：合成真值場景、EUVP 真實照片、合成影片的閃爍量測（[`docs/results.md`](docs/results.md)）。
+- **14 種方法**：7 種傳統（物理模型 / 增強）+ 7 個深度學習模型（FUnIE-GAN、WaterNet、UVE-Net 與 4 個 UIEB 訓練模型，ONNX 在瀏覽器執行）。
+- **每種方法都有客觀評測**：EUVP 真實照片與 UVE-38K 真實影片的 PSNR / SSIM、合成真值場景、閃爍量測（[`docs/results.md`](docs/results.md)、[`docs/results-video.md`](docs/results-video.md)）。
 
 ![分割比較（左原始、右 Ancuti 融合）](docs/screenshots/video-split.png)
 
@@ -18,9 +18,10 @@
 ```bash
 npm install          # 只有開發 / 測試需要；網站本身是純靜態檔
 npm run serve        # http://localhost:8080
-npm test             # 單元測試（核心運算、12 種方法、時間穩定化）
-npm run e2e -- <影片>  # 無頭 Chromium 端對端：播放、12 種方法、全部比較、5 個深度模型、匯出 MP4/PNG
-node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評測
+npm test             # 單元測試（核心運算、14 種方法、時間穩定化）
+npm run e2e -- <影片>  # 無頭 Chromium 端對端：播放、14 種方法、全部比較、7 個深度模型、匯出 MP4/PNG
+node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評測（照片、合成場景）
+node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/video-report.mjs v.json > docs/results-video.md   # 影片
 ```
 
 **發佈成網站**：推到 `main` 後由 `.github/workflows/pages.yml` 部署到 GitHub Pages
@@ -38,7 +39,7 @@ node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評�
 4. **播放很順**：播放時由 GPU（WebGL2）把色彩即時套到每一格影片，速度跟原片一樣（測試中 30 fps 影片維持約 30 fps）；
    色彩本身由背景執行緒用完整演算法在小圖（長邊 320）上持續重算，再擬合成局部色彩轉換交給 GPU。
    暫停、照片與匯出則是逐像素完整計算。不支援 WebGL2 的瀏覽器自動改用逐幀處理。
-5. **第一次開啟會在背景下載全部 5 個深度模型與執行環境（約 44 MB）** 存到本機，頂端會顯示進度；之後選用免等待、可離線。
+5. **第一次開啟會在背景下載全部 7 個深度模型與執行環境（約 51 MB）** 存到本機，頂端會顯示進度；之後選用免等待、可離線。
 6. **影片時間一致性**：τ（參數平滑時間）、輸出去閃爍強度、每 N 幀重新估計（FUnIE-GAN 預設 4）。
 7. **匯出**：照片 → PNG；影片 → MP4（WebCodecs 編碼，H.264 不可用時自動改 VP9/AV1，**保留原音軌**）。
 
@@ -46,7 +47,7 @@ node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評�
 
 ## 一、研究整理：網路上的論文與 GitHub 實作
 
-### 實作進 App 的 12 種方法
+### 實作進 App 的 14 種方法
 
 | # | 方法 | 類型 | 論文 | GitHub 參考實作 |
 |---|---|---|---|---|
@@ -62,6 +63,8 @@ node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評�
 | 10 | UIEC²-Net | 深度學習 | Wang et al., *UIEC²-Net: CNN-based Underwater Image Enhancement Using Two Color Space*, SPIC 2021 · [arXiv](https://arxiv.org/abs/2103.07138) | [BIGWangYuDong/UWEnhancement](https://github.com/BIGWangYuDong/UWEnhancement)；權重同上 |
 | 11 | UWCNN | 深度學習 | Li, Anwar, Porikli, *Underwater Scene Prior Inspired Deep Underwater Image and Video Enhancement*, Pattern Recognition 2020 · [arXiv](https://arxiv.org/abs/1807.03528) | [BIGWangYuDong/UWEnhancement](https://github.com/BIGWangYuDong/UWEnhancement)；權重同上 |
 | 12 | Five A⁺ Network | 深度學習 | Jiang et al., *Five A⁺ Network: You Only Need 9K Parameters for Underwater Image Enhancement*, BMVC 2023 · [arXiv](https://arxiv.org/abs/2305.08824) | [Owen718/FiveAPlus-Network](https://github.com/Owen718/FiveAPlus-Network)；權重同上 |
+| 13 | WaterNet | 深度學習 | Li et al., *An Underwater Image Enhancement Benchmark Dataset and Beyond*（UIEB），IEEE TIP 2020 · [arXiv](https://arxiv.org/abs/1901.05495) | [Li-Chongyi/Water-Net_Code](https://github.com/Li-Chongyi/Water-Net_Code)；PyTorch 權重 [tnwei/waternet](https://github.com/tnwei/waternet)（MIT） |
+| 14 | UVE-Net（影片） | 深度學習 | Xie et al., *UVEB: A Large-scale Benchmark and Baseline Towards Real-World Underwater Video Enhancement*, CVPR 2024 · [arXiv](https://arxiv.org/abs/2404.14542) | [yzbouc/UVEB](https://github.com/yzbouc/UVEB)（MIT，含權重） |
 
 ### 第二輪：再加入的 5 種方法（依評分挑選）
 
@@ -83,6 +86,20 @@ node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評�
 - **IBLA**（TIP 2017）是傳統物理復原中被引用最多、各綜述常列為強基準的方法；第二輪原本也考慮 ACDC（JOE 2022），
   但它的官方程式核心是加密的 MATLAB p-code，無法照原作重現，因此改用有完整 Python 參考碼的 IBLA。
 - **在本專案的 EUVP 真實照片上重新評分**（與參考圖比較），4 個 UIEB 模型的 PSNR / SSIM 都高於全部 7 種傳統方法（見第四節）。
+
+### 第三輪：GitHub 熱門專案名單
+
+常見的「GitHub 熱門水下還原專案」排名是 FUnIE-GAN、UWGAN、UWCNN、WaterNet、Sea-Thru。對照 App：
+
+| 名次 | 專案 | 狀態 |
+|---|---|---|
+| 1 | FUnIE-GAN | ✅ 已有（官方權重） |
+| 2 | UWGAN（[infrontofme/UWGAN_UIE](https://github.com/infrontofme/UWGAN_UIE)） | ❌ **無法加入**：倉庫與分支都沒有附訓練好的權重；作者的網盤連結在這個環境連不到，也沒有可用的訓練資料能自行重現 |
+| 3 | UWCNN | ✅ 已有（UIEB 權重） |
+| 4 | WaterNet | ✅ **新增**：原作 TensorFlow 權重轉成的 PyTorch 版（tnwei/waternet，sha256 `daa0ee…`；Dropbox 連不到，改從內含同一檔案的 GitHub 倉庫取得並比對雜湊）。前處理（白平衡、CLAHE、Gamma）照參考程式實作，JS 全流程與 Python 參考輸出相差 PSNR 69 dB（幾乎相同） |
+| 5 | Sea-Thru | ✅ 已有（以 ULAP 單張深度代替 RGB-D，屬近似） |
+
+另外加入 **UVE-Net**：真實水下影片資料集 UVEB（CVPR 2024）的官方基準模型，倉庫直接附權重；實測每格輸出只取決於該格，以單格模式執行，每格約 0.3 秒。
 
 ### 影片專用（時間一致性）的研究
 
@@ -109,7 +126,7 @@ node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評�
 
 ---
 
-## 二、12 種方法：原理與本實作
+## 二、14 種方法：原理與本實作
 
 每個方法分成兩步：`estimate()` 在 320 px 小圖上估計**全域量**（背景光、白平衡增益、拉伸範圍、散射係數…），
 `apply()` 在處理解析度上套用。這樣一來估計便宜、全域量也能做時間平滑。程式在 [`lib/methods/`](lib/methods)。
@@ -164,6 +181,14 @@ G/B 最亮 10% 白平衡（紅取兩者平均，同參考碼）→ 拉伸。
 WASM 單執行緒每次推論：Five A⁺ 約 0.7 s、NU²-Net 約 1 s、UWCNN 約 1 s、UIEC²-Net 約 5 s（電腦；手機約 2–3 倍），
 影片預設每 4 幀重算一次網路。模型檔各自只下載一次，存在本機快取。
 
+### 13. WaterNet — [`waternet.js`](lib/methods/waternet.js)
+輸入是原圖加上三個前處理版本：白平衡（SimplestColorBalance，飽和比例依通道總和比例調整）、Lab 亮度做 CLAHE（clip 0.1、8×8）、Gamma 0.7。
+網路產生三張信心圖，各自細修後加權融合。前處理照 tnwei/waternet 的 `data.py` 實作（含 OpenCV 8-bit Lab 量化），單張約 4–5 秒（256 px）。
+
+### 14. UVE-Net（UVEB）— [`waternet.js`](lib/methods/waternet.js)
+UVEB 官方小模型（12 通道特徵、53 萬參數）：把中間格縮小 4 倍後產生動態卷積核，再套到各格的特徵上。
+匯出時把逐批次迴圈與 5 維 PixelShuffle 改寫成等價運算（與原始 PyTorch 輸出差 0），輸入長寬為 16 的倍數。
+
 ---
 
 ## 三、影片時間一致性 — [`lib/temporal.js`](lib/temporal.js)
@@ -177,60 +202,89 @@ WASM 單執行緒每次推論：Five A⁺ 約 0.7 s、NU²-Net 約 1 s、UWCNN �
 
 ---
 
-## 四、評測結果（摘要，完整見 [`docs/results.md`](docs/results.md)）
+## 四、評測結果（摘要，完整見 [`docs/results.md`](docs/results.md)、[`docs/results-video.md`](docs/results-video.md)）
 
 **EUVP 真實水下照片**（23 張，與資料集附的參考增強圖比較；↑ 越高越好、↓ 越低越好）：
 
 | 方法 | PSNR ↑ | SSIM ↑ | 色差 ΔE ↓ | UIQM ↑ |
 |---|---|---|---|---|
-| 未處理 | — | — | 23.6 | 2.73 |
+| 未處理 | 17.19 | 0.680 | 23.6 | 2.73 |
 | FUnIE-GAN ※ | **21.92** | **0.708** | **13.3** | 3.23 |
-| **NU²-Net** | 19.81 | 0.705 | 16.9 | 3.24 |
-| **UIEC²-Net** | 19.43 | 0.697 | 18.0 | 3.22 |
-| **Five A⁺** | 19.13 | 0.695 | 18.5 | 3.20 |
+| NU²-Net | 19.81 | 0.705 | 16.9 | 3.24 |
+| UIEC²-Net | 19.43 | 0.697 | 18.0 | 3.22 |
+| Five A⁺ | 19.13 | 0.695 | 18.5 | 3.20 |
+| **WaterNet** | 19.05 | 0.698 | 17.4 | 3.22 |
+| **UVE-Net** | 18.94 | 0.677 | 17.7 | 3.13 |
 | ULAP | 18.02 | 0.678 | 19.8 | 2.99 |
-| **IBLA** | 17.61 | 0.645 | 20.8 | 2.65 |
-| **UWCNN** | 17.44 | 0.653 | 21.6 | 3.09 |
+| IBLA | 17.61 | 0.645 | 20.8 | 2.65 |
+| UWCNN | 17.44 | 0.653 | 21.6 | 3.09 |
 | 色彩平衡＋融合 | 16.77 | 0.695 | 24.3 | **3.46** |
 | RGHS | 15.15 | 0.627 | 25.3 | 2.67 |
 | Sea-thru（ULAP 深度） | 15.13 | 0.617 | 25.8 | 3.10 |
 | MLLE | 15.07 | 0.644 | 23.8 | 3.07 |
 | UDCP | 11.73 | 0.453 | 37.8 | 2.81 |
 
-粗體名稱 = 第二輪新加入的 5 種。※ FUnIE-GAN 就是用 EUVP 訓練的，在這組照片上有主場優勢；
-4 個 UIEB 模型是在另一個資料集（UIEB）訓練的，換到 EUVP 仍然 PSNR / SSIM 全部勝過 7 種傳統方法。
+粗體名稱 = 第三輪新加入的 2 種。※ FUnIE-GAN 就是用 EUVP 訓練的，在這組照片上有主場優勢；
+其餘 6 個深度模型是在 UIEB / UVEB 訓練的，換到 EUVP 仍然 PSNR 全部高於未處理，除 UWCNN 外也都勝過 7 種傳統方法。
+傳統方法中只有 ULAP、IBLA 的 PSNR 高於未處理——參考圖偏向「保留水色、溫和修正」，強力去色偏的方法反而扣分。
+
+**UVE-38K 真實水下影片**（5 段、240 格，與逐格參考影片比較；App 預設影片模式：時間穩定化開）：
+
+| 排名 | 方法 | PSNR ↑ | SSIM ↑ | 時間誤差 E_t ↓ | 每格 ms |
+|---|---|---|---|---|---|
+| 1 | **WaterNet** | **20.05** | 0.612 | 10.72 | 4872 |
+| 2 | Five A⁺ | 19.96 | **0.618** | **10.69** | 628 |
+| 3 | UIEC²-Net | 19.79 | 0.616 | 10.72 | 5555 |
+| 4 | NU²-Net | 19.69 | 0.616 | 10.76 | 1277 |
+| 5 | **UVE-Net** | 18.75 | 0.591 | 11.22 | 314 |
+| 6 | RGHS | 18.30 | 0.547 | 12.25 | 44 |
+| 7 | FUnIE-GAN | 17.93 | 0.576 | 11.60 | 419 |
+| 8 | UWCNN | 17.80 | 0.575 | 11.50 | 879 |
+| 9 | MLLE | 17.56 | 0.511 | 15.95 | 127 |
+| — | 未處理 | 16.84 | 0.575 | 11.08 | — |
+| 10 | 色彩平衡＋融合 | 16.24 | 0.578 | 11.59 | 104 |
+| 11 | Sea-thru（ULAP 深度） | 14.80 | 0.469 | 14.40 | 246 |
+| 12 | ULAP | 13.44 | 0.500 | 12.28 | 27 |
+| 13 | IBLA | 13.32 | 0.426 | 12.95 | 249 |
+| 14 | UDCP | 11.01 | 0.367 | 13.74 | 31 |
+
+UVE-38K 的參考影片是從 12 種增強方法挑選、再做幀間一致化的結果；GIF 預覽為 256 色，分數適合方法間互相比較。
+沒了 EUVP 的主場優勢，FUnIE-GAN 掉到第 7；前 4 名都是 UIEB 訓練的模型，差距在 0.4 dB 內。
+每格 ms 是 Node 單執行緒 CPU、320 px 全方法處理；App 播放時改用 GPU 套用局部係數，不受這個速度限制。
 
 **合成場景**（已知真值；水上場景經修正成像模型退化成藍水/綠水/混濁）——平均色差 ΔE（越低越好）：
 
 | 方法 | 平均 ΔE | 每幀（640×360，Node 單執行緒） |
 |---|---|---|
 | 未處理 | 35.5 | — |
-| **色彩平衡＋融合** | **21.1** | 323 ms |
-| UWCNN | 21.4 | 757 ms |
-| MLLE | 21.8 | 212 ms |
-| NU²-Net | 22.2 | 1057 ms |
-| Five A⁺ | 23.3 | 623 ms |
-| UIEC²-Net | 25.9 | 4896 ms |
-| FUnIE-GAN | 26.0 | 366 ms |
-| IBLA | 29.1 | 370 ms |
-| Sea-thru（ULAP 深度） | 29.3 | 236 ms |
-| RGHS | 33.7 | 90 ms |
-| ULAP | 35.6 | 62 ms |
-| UDCP | 49.7 | 52 ms |
+| **色彩平衡＋融合** | **21.1** | 661 ms |
+| UWCNN | 21.4 | 1178 ms |
+| MLLE | 21.8 | 297 ms |
+| NU²-Net | 22.2 | 1592 ms |
+| Five A⁺ | 23.3 | 774 ms |
+| UVE-Net | 24.0 | 403 ms |
+| UIEC²-Net | 25.9 | 6612 ms |
+| FUnIE-GAN | 26.0 | 791 ms |
+| WaterNet | 27.6 | 5014 ms |
+| IBLA | 29.1 | 760 ms |
+| Sea-thru（ULAP 深度） | 29.3 | 439 ms |
+| RGHS | 33.7 | 171 ms |
+| ULAP | 35.6 | 93 ms |
+| UDCP | 49.7 | 106 ms |
 
-**影片閃爍**（合成平移影片，亮度閃爍 0–255）：時間穩定化讓 12 種方法中的 11 種閃爍降低 **37–90%**
-（例：UDCP 2.46 → 0.63、UWCNN 3.32 → 0.49、FUnIE-GAN 1.46 → 0.14），扭曲誤差也全部下降。
+**影片閃爍**（合成平移影片，亮度閃爍 0–255）：時間穩定化讓 14 種方法中的 13 種閃爍降低 **37–90%**
+（例：WaterNet 3.70 → 0.46、UWCNN 3.32 → 0.49、FUnIE-GAN 1.46 → 0.14），扭曲誤差也全部下降。
 例外是 RGHS（1.32 → 1.39）：它每幀的直方圖拉伸本來就會抵消輸入的曝光抖動，平滑參數反而保留了輸入本身的抖動。
-深度模型本身的逐幀閃爍也明顯比傳統方法小（NU²-Net、UIEC²-Net、Five A⁺ 逐幀只有 0.6）。
+UVE-Net 是影片模型，逐幀閃爍本來就最低（0.55），穩定後 0.15。
 
 **怎麼選**：
-- **畫質優先、照片或短片**：**NU²-Net**（整體最均衡）或 **UIEC²-Net**（UIEB 分數最高，但每幀約 5 秒）。
-- **手機上跑影片**：**Five A⁺**（0.9 MB、最快的深度模型）或 **1 融合**（傳統方法中最穩）。
+- **畫質優先、照片或短片**：**WaterNet**（真實影片第 1）、**NU²-Net**（照片整體最均衡）或 **UIEC²-Net**——這三個每幀都要 1–5 秒（CPU）。
+- **手機上跑影片**：**Five A⁺**（0.9 MB、真實影片第 2、SSIM 與時間誤差最好）或 **UVE-Net**（最快的深度模型、閃爍最低）；傳統方法選 **1 融合**。
 - **綠水、色偏重的近景**：**2 MLLE** 或 **8 FUnIE-GAN**；**淺水晴天、想保留水的氛圍**：**5 RGHS**。
 - **混濁、霧感重**：**7 IBLA** 或 **4 UDCP**（白平衡開）；**6 Sea-thru** 對有遠近層次的場景最「物理」，但依賴深度先驗。
 
 > 指標的限制：UIQM / UCIQE 會獎勵高對比、高飽和（UDCP 的 UCIQE 最高但色差最大），只能當參考；
-> 合成場景的色差是「真值」意義下的比較，但退化模型是簡化的；EUVP 的參考圖是人工挑選的增強結果，不是真值。
+> 合成場景的色差是「真值」意義下的比較，但退化模型是簡化的；EUVP、UVE-38K 的參考圖都是人工挑選的增強結果，不是真值。
 
 ---
 
@@ -241,13 +295,16 @@ index.html  style.css  app.js     介面（分割比較、播放、全部比較�
 worker.js                         背景執行緒：所有運算、ONNX 模型載入與本機快取
 sw.js  manifest.webmanifest       PWA（離線、安裝）
 lib/core.js                       影像基礎：縮放、方框/高斯/最小值濾波、引導濾波、金字塔、Lab
-lib/methods/*.js                  12 種方法（estimate / apply）；net.js = 深度模型共同外殼
+lib/methods/*.js                  14 種方法（estimate / apply）；net.js = 深度模型共同外殼
 lib/temporal.js                   時間一致性
 lib/pipeline.js                   單幀管線：估計 → 平滑 → 套用 → 去閃爍 → 強度
 lib/metrics.js                    UIQM、UCIQE、色差、PSNR、SSIM
 lib/synth.js                      合成真值場景與影片（測試與「合成示範」）
-models/  vendor/                  5 個 ONNX 模型、onnxruntime-web、mediabunny（npm run vendor 更新）
+models/  vendor/                  7 個 ONNX 模型、onnxruntime-web、mediabunny（npm run vendor 更新）
 scripts/export_uieb_onnx.py       UIEB 權重 → ONNX 的轉檔腳本（需 torch）
+scripts/export_extra_onnx.py      WaterNet、UVE-Net 權重 → ONNX
+scripts/bench.mjs                 評測：合成場景、EUVP 照片、合成影片閃爍 → docs/results.md
+scripts/bench-video.mjs           評測：UVE-38K 成對影片（video-report.mjs → docs/results-video.md）
 test/  scripts/                   單元測試、評測、端對端、靜態伺服器
 ```
 
@@ -255,5 +312,6 @@ test/  scripts/                   單元測試、評測、端對端、靜態伺�
 
 程式碼 MIT（[`LICENSE`](LICENSE)）。第三方：FUnIE-GAN 權重 MIT（[`models/FUnIE-GAN-LICENSE`](models/FUnIE-GAN-LICENSE)）、
 UWCNN / UIEC²-Net / NU²-Net / Five A⁺ 的 UIEB 權重 MIT（[`models/UIEB-MODELS-LICENSE`](models/UIEB-MODELS-LICENSE)）、
+WaterNet 權重 MIT（tnwei，[`models/WATERNET-LICENSE`](models/WATERNET-LICENSE)）、UVE-Net 權重 MIT（yzbouc，[`models/UVENET-LICENSE`](models/UVENET-LICENSE)）、
 onnxruntime-web MIT、Mediabunny MPL-2.0（[`vendor/`](vendor)）。各方法的演算法版權屬原論文作者；本專案依論文與公開參考碼重新實作。
-評測用的 EUVP 照片不隨專案發佈（由 `bench.mjs` 從 FUnIE-GAN 倉庫另行取得）。
+評測用的 EUVP 照片與 UVE-38K 影片不隨專案發佈（EUVP 由 `bench.mjs` 從 FUnIE-GAN 倉庫取得；UVE-38K 請 clone github.com/TrentQiQ/UVE-38K）。
