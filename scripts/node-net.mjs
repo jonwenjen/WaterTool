@@ -9,6 +9,6 @@ export async function nodeRunNet() {
     if (!sessions.has(file)) {
       sessions.set(file, await ort.InferenceSession.create(readFileSync(new URL('../' + file, import.meta.url)), { executionProviders: ['wasm'] }));
     }
-    return (await sessions.get(file).run({ x: new ort.Tensor('float32', x, [1, 3, h, w]) })).y.data;
+    return (await sessions.get(file).run({ x: new ort.Tensor('float32', x, [1, x.length / (w * h), h, w]) })).y.data;
   };
 }

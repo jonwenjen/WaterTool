@@ -684,7 +684,7 @@ function onModel(m) {
   }
 }
 // ---------------- 預先下載全部模型 ----------------
-// 第一次開啟就在背景把 ONNX 執行環境與 5 個深度模型存進本機（已存在的略過），之後選用免等待、可離線。
+// 第一次開啟就在背景把 ONNX 執行環境與全部深度模型存進本機（已存在的略過），之後選用免等待、可離線。
 function onPrefetch(m) {
   const box = $('prefetch'), bar = $('prefetchBar');
   if (!m.done) {
@@ -699,7 +699,7 @@ function onPrefetch(m) {
   box.hidden = false;
   $('prefetchText').textContent = m.failed
     ? `有 ${m.failed} 個模型下載失敗，選用時會再試一次。`
-    : '5 個深度模型都已存在本機，之後可離線使用。';
+    : `${METHODS.filter((x) => x.needsModel).length} 個深度模型都已存在本機，之後可離線使用。`;
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   setTimeout(() => { box.hidden = true; }, 5000);
 }

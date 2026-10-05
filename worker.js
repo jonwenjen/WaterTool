@@ -16,7 +16,7 @@ const ctx = {
   runNet: async (file, x, w, h) => {
     const s = sessions.get(file);
     if (!s) throw new Error('模型尚未載入：' + file);
-    return (await s.session.run({ x: new s.ort.Tensor('float32', x, [1, 3, h, w]) })).y.data;
+    return (await s.session.run({ x: new s.ort.Tensor('float32', x, [1, x.length / (w * h), h, w]) })).y.data;
   },
 };
 const slots = { preview: new Processor(ctx), export: new Processor(ctx) };
