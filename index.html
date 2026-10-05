@@ -31,6 +31,8 @@
   <main class="layout">
     <section class="stage">
       <div class="viewer" id="viewer">
+        <!-- 來源影片放在預覽畫布底下（不用 display:none、不預設靜音）：Android Chrome 會自動暫停「看不見又靜音」的影片 -->
+        <video id="video" class="srcvideo" playsinline preload="auto" aria-hidden="true"></video>
         <canvas id="view" width="960" height="540" aria-label="預覽"></canvas>
         <div class="split-handle" id="handle" role="slider" aria-label="分割線位置" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"></div>
         <span class="tag left" id="tagL">原始</span>
@@ -45,6 +47,7 @@
 
       <div class="transport">
         <button class="icon" id="play" type="button" aria-label="播放" disabled>▶</button>
+        <button class="icon" id="mute" type="button" aria-label="關閉聲音" title="聲音" disabled>🔊</button>
         <input type="range" id="seek" min="0" max="1000" value="0" disabled aria-label="時間軸">
         <span class="time" id="time">0:00 / 0:00</span>
         <div class="seg" role="tablist" aria-label="檢視方式">
@@ -121,7 +124,6 @@
     <div class="row"><button class="btn primary" id="installClose" type="button">知道了</button></div>
   </dialog>
 
-  <video id="video" playsinline muted hidden></video>
   <script type="module" src="app.js"></script>
 </body>
 </html>

@@ -219,7 +219,13 @@ function play() {
   $('play').setAttribute('aria-label', '暫停');
   resetTemporal();
   if (state.src.kind === 'video') {
-    video.play().catch((e) => showError('無法播放：' + e.message));
+    const p = video.play();
+    if (p) p.catch((e) => {
+      if (!state.playing) return; // 使用者已經按了暫停
+      if (e.name === 'AbortError' && !video.paused) return;
+      stopPlaybackUi();
+      showError(e.name === 'NotAllowedError' ? '瀏覽器擋下了播放，請再按一次 ▶。' : '播放被中斷，請再按一次 ▶。（' + e.message + '）');
+    });
     nextFrame();
   } else {
     let last = performance.now(), lastIdx = demo.idx, acc = 0;
@@ -253,6 +259,28 @@ function pause() {
 }
 $('play').onclick = () => (state.playing ? pause() : play());
 video.onended = () => { if (state.playing) pause(); };
+// 不是我們自己暫停（例如瀏覽器省電、來電、耳機拔除）：介面回到暫停狀態並處理目前畫面
+video.addEventListener('pause', () => {
+  if (state.playing && state.src?.kind === 'video' && !video.ended) stopPlaybackUi();
+});
+function stopPlaybackUi() {
+  state.playing = false;
+  $('play').textContent = '▶';
+  $('play').setAttribute('aria-label', '播放');
+  resetTemporal();
+  processFrame(null);
+}
+
+// 聲音：預設開（靜音又看不見的影片會被 Android Chrome 自動暫停，所以用音量 0 代替 muted）
+function setSound(on) {
+  video.muted = false;
+  video.volume = on ? 1 : 0;
+  $('mute').textContent = on ? '🔊' : '🔈';
+  $('mute').setAttribute('aria-label', on ? '關閉聲音' : '開啟聲音');
+  $('mute').setAttribute('aria-pressed', String(!on));
+}
+$('mute').onclick = () => setSound(video.volume === 0);
+setSound(true);
 
 function duration() {
   if (!state.src) return 0;
@@ -331,6 +359,8 @@ function setSource(src) {
   hasResult = false;
   $('empty').hidden = true;
   $('play').disabled = $('seek').disabled = src.kind === 'image';
+  $('mute').disabled = src.kind !== 'video';
+  video.hidden = src.kind !== 'video';
   $('export').disabled = false;
   $('exportNote').textContent = src.kind === 'image' ? `照片 ${src.w}×${src.h}，匯出 PNG。` : `影片 ${src.w}×${src.h}，匯出 MP4（H.264，保留音軌）。`;
   if (src.kind === 'demo') $('exportNote').textContent = '合成示範影片，匯出 MP4。';

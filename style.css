@@ -64,7 +64,8 @@ a { color: var(--accent); }
   position: relative; background: #000; border-radius: var(--radius); overflow: hidden;
   aspect-ratio: 16 / 9; display: grid; place-items: center; touch-action: none;
 }
-.viewer canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+.viewer canvas { width: 100%; height: 100%; object-fit: contain; display: block; position: relative; z-index: 1; }
+.viewer .srcvideo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; z-index: 0; pointer-events: none; }
 .split-handle {
   position: absolute; top: 0; bottom: 0; left: 50%; width: 28px; margin-left: -14px; cursor: ew-resize; outline: none;
 }
@@ -162,3 +163,5 @@ progress { width: 100%; margin-top: 10px; accent-color: var(--accent); }
 .dialog li { margin: 6px 0; }
 .dialog p { color: var(--muted); font-size: 13px; }
 .dialog .url { word-break: break-all; color: var(--accent); user-select: all; }
+/* 預覽畫布（z-index 1）蓋住來源影片（0）；疊在上面的控制要更高 */
+.split-handle, .tag, .empty, .busy { z-index: 2; }
