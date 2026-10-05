@@ -7,7 +7,7 @@ import jpeg from 'jpeg-js';
 import * as C from '../lib/core.js';
 import { makeScene, degrade, WATERS, syntheticClip } from '../lib/synth.js';
 import { METHODS, defaults } from '../lib/methods/index.js';
-import { uiqm, uciqe, deltaE } from '../lib/metrics.js';
+import { uiqm, uciqe, deltaE, psnr, ssim } from '../lib/metrics.js';
 import { Processor } from '../lib/pipeline.js';
 import { nodeRunNet } from './node-net.mjs';
 
@@ -51,17 +51,17 @@ for (const [name, r] of Object.entries(rows))
 if (euvp && existsSync(`${euvp}/A`)) {
   log('\n## 2. 真實水下照片（EUVP 測試集）\n');
   const names = readdirSync(`${euvp}/A`).filter((n) => /\.jpe?g$/i.test(n)).sort((a, b) => parseInt(a) - parseInt(b));
-  log(`${names.length} 張（256×256，Islam et al. 2020）。「ΔE 參考」= 與資料集附的參考增強圖（GTr_A）的色差 —— 參考圖本身是人工挑選的增強結果，不是真值，只作參考。\n`);
+  log(`${names.length} 張（256×256，Islam et al. 2020）。PSNR / SSIM / ΔE 都是與資料集附的參考增強圖（GTr_A）比較 —— 參考圖本身是挑選過的增強結果，不是真值，只作參考。\n`);
   const load = (p) => {
     const j = jpeg.decode(readFileSync(p), { useTArray: true });
     return C.fromRGBA(j.data, j.width, j.height);
   };
   const imgs = names.map((n) => [load(`${euvp}/A/${n}`), existsSync(`${euvp}/GTr_A/${n}`) ? load(`${euvp}/GTr_A/${n}`) : null]);
-  log('| 方法 | UIQM | UCIQE | ΔE 參考 |');
-  log('|---|---|---|---|');
+  log('| 方法 | PSNR ↑ | SSIM ↑ | ΔE ↓ | UIQM ↑ | UCIQE ↑ |');
+  log('|---|---|---|---|---|---|');
   const score = (outs) => {
-    const de = outs.map((o, i) => (imgs[i][1] ? deltaE(o, imgs[i][1]) : NaN)).filter((v) => !Number.isNaN(v));
-    return `${f(avg(outs.map((o) => uiqm(o).uiqm)))} | ${f(avg(outs.map(uciqe)), 3)} | ${de.length ? f(avg(de), 1) : '—'}`;
+    const ref = outs.map((o, i) => [o, imgs[i][1]]).filter((x) => x[1]);
+    return `${f(avg(ref.map(([o, r]) => psnr(o, r))))} | ${f(avg(ref.map(([o, r]) => ssim(o, r))), 3)} | ${f(avg(ref.map(([o, r]) => deltaE(o, r))), 1)} | ${f(avg(outs.map((o) => uiqm(o).uiqm)))} | ${f(avg(outs.map(uciqe)), 3)}`;
   };
   log(`| （未處理） | ${score(imgs.map((x) => x[0]))} |`);
   for (const m of METHODS) {

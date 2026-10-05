@@ -1,0 +1,32 @@
+models/uwcnn.onnx, models/fiveaplus.onnx, models/uiec2net.onnx, models/nu2net.onnx
+
+Converted to ONNX by scripts/export_uieb_onnx.py from the UIEB checkpoints in
+https://github.com/ddz16/UIE_Benckmark (checkpoints/UIEB/*.ckpt), released under:
+
+MIT License
+
+Copyright (c) 2023 ddz16
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Network architectures are those of the cited papers:
+- UWCNN: Li, Anwar, Porikli, Pattern Recognition 98, 2020
+- UIEC^2-Net: Wang, Guo, Gao, Yue, Signal Processing: Image Communication 96, 2021
+- NU^2-Net (Underwater Ranker): Guo, Wu, Jin, Han, Chai, Zhang, Li, AAAI 2023
+- Five A+ Network: Jiang, Ye, Bai, Chen, Chai, Jun, Liu, Chen, BMVC 2023

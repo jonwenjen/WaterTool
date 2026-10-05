@@ -4,15 +4,23 @@
 //   { type:'compare', id, rgba, w, h, methods, params, post } → { type:'compare', id, tiles:[{id, rgba, ms}] }
 //   { type:'metrics', id, rgba, w, h }  → { type:'metrics', id, uiqm, uciqe }
 //   { type:'reset', slot }
-//   { type:'loadModel' } → { type:'model', state:'progress'|'ready'|'error', ... }
+//   { type:'loadModel', file } → { type:'model', file, state:'progress'|'ready'|'error', ... }
 import * as C from './lib/core.js';
 import { Processor } from './lib/pipeline.js';
 import { byId, defaults } from './lib/methods/index.js';
 import { uiqm, uciqe } from './lib/metrics.js';
 
-const ctx = { runNet: null };
+const sessions = new Map(); // 模型檔 → InferenceSession
+const ctx = {
+  runNet: async (file, x, w, h) => {
+    const s = sessions.get(file);
+    if (!s) throw new Error('模型尚未載入：' + file);
+    return (await s.session.run({ x: new s.ort.Tensor('float32', x, [1, 3, h, w]) })).y.data;
+  },
+};
 const slots = { preview: new Processor(ctx), export: new Processor(ctx) };
-let modelPromise = null;
+const loading = new Map(); // 模型檔 → Promise
+let runtime = null;
 
 // 模型與 ONNX 執行環境存在獨立、不隨 App 版本清除的快取（Cache Storage），只下載一次。
 // 只有這兩個檔案本身改變時才改 MODEL_CACHE 的版本號（sw.js 也用同一個名字）。
@@ -61,38 +69,51 @@ async function download(url, onBytes) {
   return out;
 }
 
-function loadModel() {
-  if (modelPromise) return modelPromise;
-  modelPromise = (async () => {
+/** ONNX 執行環境（所有模型共用，只載一次）。onBytes 給 WASM 的下載進度。 */
+function loadRuntime(onBytes) {
+  if (runtime) return runtime;
+  runtime = (async () => {
+    const base = new URL('./', self.location.href);
+    const ort = await import(new URL('vendor/ort/ort.wasm.bundle.min.mjs', base).href);
+    const wasm = await cachedDownload(new URL('vendor/ort/ort-wasm-simd-threaded.wasm', base).href, onBytes);
+    ort.env.wasm.numThreads = 1; // 多執行緒需要 COOP/COEP 標頭，GitHub Pages 沒有
+    ort.env.wasm.wasmBinary = wasm;
+    return ort;
+  })();
+  runtime.catch(() => { runtime = null; });
+  return runtime;
+}
+
+function loadModel(file) {
+  if (loading.has(file)) return loading.get(file);
+  const p = (async () => {
     const seen = {};
     let fromCache = true;
     const prog = (k) => (g, t, cached) => {
       seen[k] = [g, t];
       if (!cached) fromCache = false;
       const v = Object.values(seen);
-      if (!cached) postMessage({ type: 'model', state: 'progress', got: v.reduce((s, x) => s + x[0], 0), total: v.reduce((s, x) => s + x[1], 0) });
+      if (!cached) postMessage({ type: 'model', file, state: 'progress', got: v.reduce((s, x) => s + x[0], 0), total: v.reduce((s, x) => s + x[1], 0) });
     };
-    const base = new URL('./', self.location.href);
-    const ort = await import(new URL('vendor/ort/ort.wasm.bundle.min.mjs', base).href);
-    const [wasm, model] = await Promise.all([
-      cachedDownload(new URL('vendor/ort/ort-wasm-simd-threaded.wasm', base).href, prog('wasm')),
-      cachedDownload(new URL('models/funie-gan.fp16.onnx', base).href, prog('model')),
+    const [ort, model] = await Promise.all([
+      loadRuntime(prog('wasm')),
+      cachedDownload(new URL(file, new URL('./', self.location.href)).href, prog('model')),
     ]);
-    ort.env.wasm.numThreads = 1; // 多執行緒需要 COOP/COEP 標頭，GitHub Pages 沒有
-    ort.env.wasm.wasmBinary = wasm;
     const session = await ort.InferenceSession.create(model, { executionProviders: ['wasm'] });
-    ctx.runNet = async (x, w, h) => (await session.run({ x: new ort.Tensor('float32', x, [1, 3, h, w]) })).y.data;
-    postMessage({ type: 'model', state: 'ready', fromCache });
+    sessions.set(file, { ort, session });
+    postMessage({ type: 'model', file, state: 'ready', fromCache });
   })().catch((err) => {
-    modelPromise = null;
-    postMessage({ type: 'model', state: 'error', message: String(err && err.message ? err.message : err) });
+    loading.delete(file);
+    postMessage({ type: 'model', file, state: 'error', message: String(err && err.message ? err.message : err) });
     throw err;
   });
-  return modelPromise;
+  loading.set(file, p);
+  return p;
 }
 
 async function ensureModel(method) {
-  if (byId[method]?.needsModel && !ctx.runNet) await loadModel();
+  const m = byId[method];
+  if (m?.needsModel && !sessions.has(m.model.file)) await loadModel(m.model.file);
 }
 
 self.onmessage = async (e) => {
@@ -101,7 +122,7 @@ self.onmessage = async (e) => {
     if (m.type === 'reset') {
       (slots[m.slot] || slots.preview).reset();
     } else if (m.type === 'loadModel') {
-      await loadModel().catch(() => {});
+      await loadModel(m.file).catch(() => {});
     } else if (m.type === 'process') {
       await ensureModel(m.opts.method);
       const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
@@ -112,8 +133,8 @@ self.onmessage = async (e) => {
       const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
       const tiles = [];
       for (const id of m.methods) {
-        if (byId[id].needsModel && !ctx.runNet) {
-          tiles.push({ id, error: '需先載入模型' });
+        if (byId[id].needsModel && !sessions.has(byId[id].model.file)) {
+          tiles.push({ id, error: '需先選一次此方法以載入模型' });
           continue;
         }
         const t = performance.now();

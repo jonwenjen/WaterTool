@@ -41,7 +41,7 @@ const state = {
   view: 'split',
   split: 0.5,
   playing: false,
-  modelReady: false,
+  models: new Set(), // 已載入的模型檔
 };
 function save() {
   try {
@@ -441,7 +441,7 @@ for (const b of document.querySelectorAll('.seg button')) {
 async function runCompare() {
   if (!state.src) return;
   const box = $('compare');
-  box.innerHTML = '<p class="note">七種方法計算中…（FUnIE-GAN 需先載入模型）</p>';
+  box.innerHTML = `<p class="note">${METHODS.length} 種方法計算中…（深度學習模型要先點選過一次才會載入）</p>`;
   const [w, h] = C.fitSize(orig.width, orig.height, 480);
   const c = document.createElement('canvas');
   c.width = w;
@@ -493,12 +493,14 @@ function selectMethod(id) {
   renderMethods();
   renderParams();
   for (const t of document.querySelectorAll('.tile')) t.classList.toggle('on', t.querySelector('.nm')?.textContent === byId[id].name);
-  if (byId[id].needsModel && !state.modelReady) {
-    worker.postMessage({ type: 'loadModel' }); // 選了就開始載入，不必等有畫面
-    showModelNote('第一次使用會下載 FUnIE-GAN 模型與 ONNX 執行環境（約 28 MB），存在本機後就不用再下載；之後只需約 1～2 秒載入。');
-    // 影片預設每 4 幀重算一次網路（其餘幀沿用並平滑係數）
-    if (+$('tEvery').value === 1) setRange('tEvery', 4);
+  const m = byId[id];
+  if (m.needsModel && !state.models.has(m.model.file)) {
+    worker.postMessage({ type: 'loadModel', file: m.model.file }); // 選了就開始載入，不必等有畫面
+    const mb = m.model.mb + (state.models.size ? 0 : 14); // 第一個模型還要下載 ONNX 執行環境（14 MB）
+    showModelNote(`第一次使用會下載 ${m.short} 模型${state.models.size ? '' : '與 ONNX 執行環境'}（約 ${mb < 1 ? mb.toFixed(1) : Math.round(mb)} MB），存在本機後就不用再下載。`);
   }
+  // 深度模型在影片中預設每 4 幀重算一次網路（其餘幀沿用並平滑係數）
+  if (m.needsModel && +$('tEvery').value === 1) setRange('tEvery', 4);
   save();
   resetTemporal();
   processFrame(null);
@@ -533,7 +535,7 @@ function renderParams() {
     });
     box.append(wrap);
   }
-  $('modelState').hidden = !m.needsModel || state.modelReady;
+  $('modelState').hidden = !m.needsModel || state.models.has(m.model.file);
 }
 const fmt = (v, step) => (step >= 1 ? String(Math.round(v)) : (+v).toFixed(step < 0.1 ? 2 : 1));
 let paramTimer = 0;
@@ -553,11 +555,13 @@ $('resetParams').onclick = () => {
 };
 
 function onModel(m) {
+  if (m.state === 'ready') state.models.add(m.file);
+  const cur = byId[state.method];
+  if (!cur.needsModel || cur.model.file !== m.file) return; // 只顯示目前方法的模型狀態
   if (m.state === 'progress') {
     const pct = m.total ? ` ${Math.round((m.got / m.total) * 100)}%` : '';
     showModelNote(`下載模型中… ${(m.got / 1e6).toFixed(1)} MB${pct}`);
   } else if (m.state === 'ready') {
-    state.modelReady = true;
     showModelNote(m.fromCache ? '模型已從本機載入（不需下載）。' : '模型已下載並存在本機，之後不用再下載。');
     // 請瀏覽器把資料列為永久儲存，空間不足時較不會被清除（瀏覽器可能自動決定或忽略）
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});

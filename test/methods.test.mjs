@@ -28,7 +28,7 @@ for (const m of METHODS) {
 
 test('色彩校正方法在藍水合成場景都降低與真值的色差', async () => {
   const base = deltaE(blue, scene.img);
-  for (const id of ['ancuti', 'mlle', 'seathru', 'funie']) {
+  for (const id of ['ancuti', 'mlle', 'seathru', 'funie', 'nu2net', 'uiec2net', 'uwcnn', 'fiveaplus']) {
     const { out } = await new Processor(ctx).run(blue, { method: id });
     const de = deltaE(out, scene.img);
     assert.ok(de < base * 0.85, `${id}: ΔE ${de.toFixed(1)} 應 < ${(base * 0.85).toFixed(1)}`);

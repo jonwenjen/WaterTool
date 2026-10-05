@@ -33,7 +33,8 @@ const waitIdle = () => page.waitForFunction(() => document.getElementById('busy'
 
 try {
   await page.goto(`http://localhost:${port}/`);
-  ok(await page.locator('.method').count() === 7, '列出 7 種方法');
+  const N = await page.evaluate(() => document.querySelectorAll('.method').length);
+  ok(N === 12, `列出 ${N} 種方法`);
 
   // 合成示範
   await page.click('#demo');
@@ -48,22 +49,28 @@ try {
   await shot({ path: join(TMP, 'demo-split.png') });
 
   // 每種方法都能在介面上跑
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 7; i++) {
     await page.locator('.method').nth(i).click();
     await waitIdle();
   }
-  ok(true, '6 種傳統方法都能在介面上處理');
+  ok(true, '7 種傳統方法都能在介面上處理');
 
-  // FUnIE-GAN（下載模型、WASM 推論）
-  await page.locator('.method').nth(6).click();
-  await page.waitForFunction(() => window.__watertool.state.modelReady, null, { timeout: 180000 });
-  await waitIdle();
-  ok(true, 'FUnIE-GAN 模型載入並完成推論');
+  // 5 個深度學習模型（下載模型、WASM 推論）
+  for (let i = 7; i < 12; i++) {
+    await page.locator('.method').nth(i).click();
+    const id = await page.evaluate(() => window.__watertool.state.method);
+    await page.waitForFunction(() => {
+      const s = window.__watertool.state;
+      return [...s.models].some((f) => f.includes(s.method === 'funie' ? 'funie' : s.method));
+    }, null, { timeout: 180000 });
+    await waitIdle();
+    ok(true, `${id} 模型載入並完成推論`);
+  }
 
   // 七法比較
   await page.click('[data-view=compare]');
-  await page.waitForFunction(() => document.querySelectorAll('.tile canvas').length === 7, null, { timeout: 180000 });
-  ok(true, '七法比較顯示 7 張結果');
+  await page.waitForFunction(() => document.querySelectorAll('.tile canvas').length === 12, null, { timeout: 300000 });
+  ok(true, '全部比較顯示 12 張結果');
   await shot({ path: join(TMP, 'compare.png'), fullPage: true });
   await page.click('[data-view=split]');
 
@@ -104,7 +111,7 @@ try {
     await page.waitForTimeout(800);
     await shot({ path: join(OUT, 'photo-split.png') });
     await page.click('[data-view=compare]');
-    await page.waitForFunction(() => document.querySelectorAll('.tile canvas').length === 7, null, { timeout: 180000 });
+    await page.waitForFunction(() => document.querySelectorAll('.tile canvas').length === 12, null, { timeout: 300000 });
     await page.locator('#compare').screenshot({ path: join(OUT, 'photo-compare.png') });
     await page.click('[data-view=split]');
     ok(true, '真實照片截圖');
