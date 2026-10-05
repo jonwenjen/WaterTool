@@ -554,7 +554,7 @@ for (const b of document.querySelectorAll('.seg button')) {
 async function runCompare() {
   if (!state.src) return;
   const box = $('compare');
-  box.innerHTML = `<p class="note">${METHODS.length} 種方法計算中…（深度學習模型要先點選過一次才會載入）</p>`;
+  box.innerHTML = `<p class="note">${METHODS.length} 種方法計算中…（深度模型第一次載入需要幾秒）</p>`;
   const [w, h] = C.fitSize(orig.width, orig.height, 480);
   const c = document.createElement('canvas');
   c.width = w;

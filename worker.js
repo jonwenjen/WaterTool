@@ -205,8 +205,10 @@ self.onmessage = async (e) => {
       const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
       const tiles = [];
       for (const id of m.methods) {
-        if (byId[id].needsModel && !sessions.has(byId[id].model.file)) {
-          tiles.push({ id, error: '需先選一次此方法以載入模型' });
+        try {
+          await ensureModel(id); // 模型已預先下載時直接從本機載入
+        } catch (err) {
+          tiles.push({ id, error: '模型載入失敗：' + (err && err.message ? err.message : err) });
           continue;
         }
         const t = performance.now();
