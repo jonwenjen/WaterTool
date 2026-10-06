@@ -12,18 +12,22 @@ const fmtTime = (s) => (Number.isFinite(s) ? `${Math.floor(s / 60)}:${String(Mat
 const LONG_EDGE = { 480: 854, 720: 1280, 1080: 1920, 2160: 3840 };
 
 // ---------------- 背景執行緒 ----------------
-const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+let worker = null;
 let seq = 0;
 const pending = new Map();
+let lastHeard = 0; // 最後一次收到背景執行緒訊息的時間（看門狗用）
 function call(msg, transfer = []) {
   const id = ++seq;
   return new Promise((resolve, reject) => {
+    if (!pending.size) lastHeard = performance.now(); // 閒置期間不算
     pending.set(id, { resolve, reject });
     worker.postMessage({ ...msg, id }, transfer);
   });
 }
-worker.onmessage = (e) => {
+function onWorkerMessage(e) {
+  lastHeard = performance.now();
   const m = e.data;
+  if (m.type === 'alive') return;
   if (m.type === 'model') return onModel(m);
   if (m.type === 'prefetch') return onPrefetch(m);
   const p = pending.get(m.id);
@@ -31,8 +35,38 @@ worker.onmessage = (e) => {
   pending.delete(m.id);
   if (m.type === 'error') p.reject(new Error(m.message));
   else p.resolve(m);
-};
-worker.onerror = (e) => showError('背景執行緒錯誤：' + (e.message || e));
+}
+function startWorker() {
+  worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  worker.onmessage = onWorkerMessage;
+  worker.onerror = (e) => showError('背景執行緒錯誤：' + (e.message || e));
+}
+startWorker();
+
+// 看門狗：有請求在等、背景執行緒卻超過 WATCHDOG 毫秒沒有任何回應 → 視為卡死，重新啟動並重算目前畫面
+// （手機記憶體不足或執行環境卡住時，以前會一直轉圈、設定也不再套用）
+let WATCHDOG = 40000;
+setInterval(() => {
+  if (pending.size && performance.now() - lastHeard > WATCHDOG) restartWorker();
+}, 1000);
+function restartWorker() {
+  state.restarts = (state.restarts || 0) + 1;
+  worker.terminate();
+  const waiting = [...pending.values()];
+  pending.clear();
+  startWorker();
+  state.models.clear(); // 新的執行緒要重新載入模型（已存在本機，很快）
+  track = null;
+  for (const p of waiting) p.reject(new Error('背景運算沒有回應，已自動重新啟動'));
+  const m = byId[state.method];
+  if (m.needsModel) worker.postMessage({ type: 'loadModel', file: m.model.file });
+  console.warn('背景執行緒沒有回應，已重新啟動');
+  setTimeout(() => {
+    resetTemporal();
+    if (state.src && !state.playing) processFrame(null);
+    ensureTrack();
+  }, 0);
+}
 
 // ---------------- 狀態 ----------------
 const saved = (() => {
@@ -305,6 +339,21 @@ const glview = $('glview');
 const fitCanvas = document.createElement('canvas'), fctx = fitCanvas.getContext('2d', { willReadFrequently: true });
 const FIT_EDGE = 320;
 let gl = null; // null = 還沒試；false = 不支援（改用逐幀處理）
+// 手機記憶體吃緊或切到背景時，瀏覽器會收回 WebGL 畫布（context lost）：畫面會停住不動。
+// 收回時改用逐幀處理；恢復後下次播放再用 GPU。
+glview.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  const wasGL = glActive();
+  gl = false;
+  if (wasGL) {
+    glview.hidden = true;
+    view.hidden = false;
+    lastMediaTime = null;
+    if (state.playing && state.src?.kind === 'video') nextFrame();
+    else processFrame(null);
+  }
+});
+glview.addEventListener('webglcontextrestored', () => { gl = null; });
 function glPlayer() {
   if (gl === null) {
     try { gl = new GLPlayer(glview); } catch (err) { console.warn('GPU 播放不可用，改用逐幀處理：', err); gl = false; }
@@ -1052,7 +1101,11 @@ async function exportVideoFast() {
     $('exportNote').textContent = `GPU 套用並編碼 ${Math.round(p * 100)}%（${ow}×${oh}，${codec.toUpperCase()}，${keys.length} 個關鍵幀）`;
   };
   cancelExport = () => conv.cancel();
-  await conv.execute();
+  try {
+    await conv.execute();
+  } finally {
+    g.dispose();
+  }
   state.lastExport = { fast: true, kind, keys: keys.length, frames, keySec: tKeys };
   download(new Blob([output.target.buffer], { type: 'video/mp4' }), baseName() + '.mp4');
 }
@@ -1180,5 +1233,6 @@ renderAbout();
 placeOverlay();
 window.__watertool = { // 給自動化測試用
   state, call, renderGL, select: (id) => selectMethod(id),
+  hangWorker: (ms) => { WATCHDOG = ms; worker.postMessage({ type: 'hang', debug: 'hang-test' }); },
   keyInfo: () => ({ ready: !!(track && track.ready && keyG(0)), keys: track ? track.keys.length : 0, matrix: glActive() && !!matrixG() }),
 };

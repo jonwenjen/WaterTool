@@ -85,6 +85,12 @@ export class GLPlayer {
     this.resetCoeffs();
   }
 
+  /** 釋放 GPU 資源（瀏覽器同時能開的 WebGL 畫布有限，匯出用完就還回去） */
+  dispose() {
+    const ext = this.gl.getExtension('WEBGL_lose_context');
+    if (ext) ext.loseContext();
+  }
+
   /** 恆等轉換（a = 1、b = 0）：還沒有係數前畫面就是原片 */
   resetCoeffs() {
     this.setCoeffs(new Float32Array([1, 1, 1, 1]), new Float32Array([0, 0, 0, 0]), 1, 1);

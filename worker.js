@@ -88,7 +88,9 @@ function loadRuntime(onBytes) {
     const ort = await importRuntime(new URL('vendor/ort/ort.wasm.bundle.min.mjs', base).href);
     const wasm = await cachedDownload(new URL('vendor/ort/ort-wasm-simd-threaded.wasm', base).href, onBytes);
     // 多執行緒需要跨來源隔離（COOP/COEP 標頭）：GitHub Pages 不能設標頭，由 sw.js 補上；沒有就單執行緒
-    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
+    // 手機最多 2 條（每條執行緒都要記憶體），桌機最多 4 條
+    const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.max(1, Math.min(mobile ? 2 : 4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
     ort.env.wasm.wasmBinary = wasm;
     return ort;
   })();
@@ -190,9 +192,19 @@ function prefetchAll() {
   return prefetching;
 }
 
-self.onmessage = async (e) => {
+// 會用到演算法或模型的訊息一個一個排隊處理：同一個 ONNX session 不能同時推論（多執行緒時可能互相卡死），
+// 預覽與播放共用的時間平滑狀態也不能交錯更新。下載（prefetch / loadModel）不排隊。
+const SERIAL = new Set(['reset', 'process', 'fit', 'fitPair', 'estimate', 'keyfit', 'compare', 'metrics', 'hang']);
+let queue = Promise.resolve();
+self.onmessage = (e) => {
+  if (SERIAL.has(e.data.type)) queue = queue.then(() => handle(e));
+  else handle(e);
+};
+
+async function handle(e) {
   const m = e.data;
   try {
+    if (m.type === 'hang' && m.debug === 'hang-test') for (;;); // 測試看門狗用：模擬背景卡死
     if (m.type === 'reset') {
       (slots[m.slot] || slots.preview).reset();
       if (m.slot !== 'export') lastFit = null;
@@ -242,6 +254,7 @@ self.onmessage = async (e) => {
           tiles.push({ id, error: '模型載入失敗：' + (err && err.message ? err.message : err) });
           continue;
         }
+        postMessage({ type: 'alive' }); // 全部比較很久：讓看門狗知道還在算
         const t = performance.now();
         const r = await new Processor(ctx).run(img, { method: id, params: (m.params && m.params[id]) || defaults(byId[id]), post: m.post });
         const rgba = C.toRGBA(r.out);
@@ -255,4 +268,4 @@ self.onmessage = async (e) => {
   } catch (err) {
     postMessage({ type: 'error', id: m.id, message: String(err && err.message ? err.message : err) });
   }
-};
+}
