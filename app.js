@@ -249,24 +249,52 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
     }
     return keys;
   }
+  // 影片：用 Mediabunny（WebCodecs）直接解出關鍵幀 —— 不必播放、不必跳轉 <video>。
+  // 手機瀏覽器常常不替看不見的 <video> 載入資料（loadeddata 永遠不來），以前會一直停在「分析關鍵幀」。
+  try {
+    const MB = await loadMediabunny();
+    const input = new MB.Input({ source: new MB.BlobSource(src.file), formats: MB.ALL_FORMATS });
+    const vt = await input.getPrimaryVideoTrack();
+    if (!vt || !(await vt.canDecode())) throw new Error('無法解碼');
+    const t0 = await vt.getFirstTimestamp(), D = (await vt.computeDuration()) - t0;
+    const times = keyframeTimes(D, interval), [w, h] = C.fitSize(src.w, src.h, edge);
+    const sink = new MB.CanvasSink(vt, { width: w, height: h, fit: 'fill', poolSize: 1 });
+    let j = 0;
+    // 最後一個關鍵幀取最後一幀（時間 = 片長時解碼器回傳最後一幀）
+    for await (const wc of sink.canvasesAtTimestamps(times.map((t) => t0 + Math.min(t, Math.max(0, D - 0.001))))) {
+      if (stale()) return keys;
+      note(j + 1, times.length);
+      if (wc) await estimateAt((x, cw, ch) => x.drawImage(wc.canvas, 0, 0, cw, ch), times[j]);
+      j++;
+    }
+    if (keys.length) return keys;
+    throw new Error('沒有解出任何關鍵幀');
+  } catch (err) {
+    if (stale()) return keys;
+    console.warn('Mediabunny 取關鍵幀失敗，改用 <video> 跳轉：', err);
+    keys.length = 0;
+  }
+  // 備援：看不見的 <video> 逐一跳轉（每一步都有逾時，不會無限等待）
   const kv = document.createElement('video');
   kv.muted = true;
   kv.playsInline = true;
   kv.preload = 'auto';
   kv.src = video.src;
+  const wait = (target, ev, ms, msg) => new Promise((ok, bad) => {
+    const timer = setTimeout(() => bad(new Error(msg)), ms);
+    target.addEventListener(ev, () => { clearTimeout(timer); ok(); }, { once: true });
+  });
   try {
-    await new Promise((ok, bad) => { kv.onloadeddata = ok; kv.onerror = () => bad(new Error('無法讀取影片')); });
+    const loaded = wait(kv, 'loadeddata', 10000, '瀏覽器沒有載入影片資料，無法分析關鍵幀');
+    kv.load();
+    await loaded;
     const D = kv.duration || video.duration || 0, times = keyframeTimes(D, interval);
     for (const [j, time] of times.entries()) {
       if (stale()) return keys;
       note(j + 1, times.length);
-      const seekTo = Math.min(time, Math.max(0, D - 0.04)); // 最後一個關鍵幀 = 最後一幀
-      await new Promise((ok) => {
-        const done = () => { clearTimeout(timer); ok(); };
-        const timer = setTimeout(done, 3000);
-        kv.addEventListener('seeked', done, { once: true });
-        kv.currentTime = seekTo;
-      });
+      const seeked = wait(kv, 'seeked', 5000, '影片跳轉逾時，無法分析關鍵幀');
+      kv.currentTime = Math.min(time, Math.max(0, D - 0.04)); // 最後一個關鍵幀 = 最後一幀
+      await seeked;
       await estimateAt((x, w, h) => x.drawImage(kv, 0, 0, w, h), time);
     }
   } finally {
@@ -1079,7 +1107,7 @@ async function exportVideoFast() {
   const c = new OffscreenCanvas(ow, oh), x = c.getContext('2d');
   const glc = new OffscreenCanvas(ow, oh), g = new GLPlayer(glc, { preserve: true });
   const mix = +$('mix').value, pre = kind === 'net' ? params.amount : 1;
-  let frames = 0, seg = -1;
+  let frames = 0, seg = -1, firstTs = null;
   // 係數：目前所在區段的前後兩個關鍵幀各上傳一次，GPU 依時間比例內插
   const setKeyPair = (t) => {
     let j = keys.findIndex((k) => k.t >= t);
@@ -1103,8 +1131,10 @@ async function exportVideoFast() {
       processedHeight: oh,
       process: (sample) => {
         sample.draw(x, 0, 0, ow, oh);
-        if (kind === 'matrix') g.setMatrix(diverMatrix(interpKeys(keys, sample.timestamp)));
-        else setKeyPair(sample.timestamp);
+        if (firstTs === null) firstTs = sample.timestamp;
+        const t = sample.timestamp - firstTs; // 關鍵幀時間從影片第一格起算
+        if (kind === 'matrix') g.setMatrix(diverMatrix(interpKeys(keys, t)));
+        else setKeyPair(t);
         g.draw(c, { mode: 'result', amount: mix, pre });
         frames++;
         return glc;

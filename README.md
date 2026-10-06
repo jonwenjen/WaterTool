@@ -45,7 +45,9 @@ node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/
    會自動重新啟動並重算目前畫面；播放中重新啟動時，播放的色彩計算也會自己接回。手機收回 GPU 畫布時自動改用逐幀處理，影片不會停住。
    暫停瞬間先用這一格的 GPU 結果當暫時畫面，完整計算完成再取代（拖分隔線不會露出舊畫面）。
    ONNX 多執行緒只在桌機開；手機一律單執行緒（多執行緒在手機上曾讓背景卡死）。
-   測試：`node scripts/stress-ui.mjs <影片>`（播放／暫停／連續調參數）、`node scripts/recover-check.mjs <影片>`（模擬卡死與 GPU 畫布被收回）。
+   關鍵幀（Diverout_sim、快速匯出）用 Mediabunny 直接解碼取得，不依賴看不見的 `<video>`（手機瀏覽器常不替它載入資料，以前會停在「分析關鍵幀」）。
+   測試：`node scripts/stress-ui.mjs <影片>`（播放／暫停／連續調參數）、`node scripts/recover-check.mjs <影片>`（模擬卡死與 GPU 畫布被收回）、
+   `node scripts/mobile-keys-check.mjs <影片>`（模擬手機不載入隱藏影片）。
 8. **匯出**：照片 → PNG；影片 → MP4（WebCodecs 編碼，H.264 不可用時自動改 VP9/AV1，**保留原音軌**）。
 9. **影片匯出很快**（「影片匯出方式」選單，預設「快速」）：每 0.5 秒（或 1 秒）的關鍵幀用完整演算法算一次，
    得到「原片 → 結果」的色彩轉換；匯出每一格時把前後兩個關鍵幀在 GPU 上線性內插、套到原解析度，每格只剩 GPU 繪製與編碼。
