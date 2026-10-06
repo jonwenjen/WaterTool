@@ -11,13 +11,15 @@ await page.goto(`http://localhost:${port}/${process.env.Q || ''}`);
 if (process.env.Q) await page.waitForFunction(() => self.crossOriginIsolated, null, { timeout: 30000 });
 await page.setInputFiles('#file', VIDEO);
 await page.waitForFunction(() => window.__watertool.state.src?.kind === 'video');
-await page.selectOption('#outRes', '720');
+await page.selectOption('#outRes', process.env.OUTRES || '1080'); // App 預設 1080p
 for (const id of ids) {
-  const idx = await page.evaluate((id) => [...document.querySelectorAll('.method')].findIndex((b) => b.dataset.id === id || b.textContent.includes(id)), id);
   await page.evaluate((id) => window.__watertool.select?.(id), id);
-  await page.waitForFunction((id) => window.__watertool.state.method === id && [...window.__watertool.state.models].some((f) => f.includes(id === 'funie' ? 'funie' : id)), id, { timeout: 180000 });
+  const NETS = ['funie', 'nu2net', 'uiec2net', 'uwcnn', 'fiveaplus', 'waternet', 'uvenet'];
+  await page.waitForFunction(([id, net]) => window.__watertool.state.method === id && (!net || [...window.__watertool.state.models].some((f) => f.includes(id))), [id, NETS.includes(id)], { timeout: 180000 });
+  if (id === 'diverout') await page.waitForFunction(() => window.__watertool.keyInfo().ready, null, { timeout: 180000 });
   await page.waitForFunction(() => document.getElementById('busy').hidden, null, { timeout: 180000 });
   const t0 = Date.now();
+  await page.evaluate(() => { window.__watertool.state.lastExport = null; });
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 1800000 }), page.click('#export')]);
   const sec = (Date.now() - t0) / 1000;
   const out = `${OUTDIR}/${id}.mp4`;

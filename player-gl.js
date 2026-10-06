@@ -13,7 +13,8 @@ void main() {
 
 const FS = `#version 300 es
 precision highp float;
-uniform sampler2D src, coefA, coefB;
+uniform sampler2D src, coefA, coefB, coefA2, coefB2; // 2：下一個關鍵幀的係數（匯出時在 GPU 上內插）
+uniform float kt; // 0 = 只用 coefA/B
 uniform float split, amount, pre; // pre：方法自己的強度（深度模型的「強度」），amount：與原片混合
 uniform int mode; // 0 分割、1 結果、2 原始
 uniform bool useMat; // 全域 3×4 色彩矩陣（Diverout_sim）取代局部係數
@@ -24,7 +25,8 @@ void main() {
   vec3 s = texture(src, uv).rgb;
   vec4 s1 = vec4(s, 1.0);
   vec3 r = useMat ? clamp(vec3(dot(m0, s1), dot(m1, s1), dot(m2, s1)), 0.0, 1.0)
-                  : clamp(s + (texture(coefA, uv).rgb * s + texture(coefB, uv).rgb - s) * pre, 0.0, 1.0);
+                  : clamp(s + (mix(texture(coefA, uv).rgb, texture(coefA2, uv).rgb, kt) * s
+                               + mix(texture(coefB, uv).rgb, texture(coefB2, uv).rgb, kt) - s) * pre, 0.0, 1.0);
   r = mix(s, r, amount);
   bool showResult = mode == 1 || (mode == 0 && uv.x >= split);
   o = vec4(showResult ? r : s, 1.0);
@@ -58,7 +60,7 @@ export class GLPlayer {
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    this.tex = [0, 1, 2].map((unit) => {
+    this.tex = [0, 1, 2, 3, 4].map((unit) => {
       const t = gl.createTexture();
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, t);
@@ -71,6 +73,9 @@ export class GLPlayer {
     gl.uniform1i(gl.getUniformLocation(prog, 'src'), 0);
     gl.uniform1i(gl.getUniformLocation(prog, 'coefA'), 1);
     gl.uniform1i(gl.getUniformLocation(prog, 'coefB'), 2);
+    gl.uniform1i(gl.getUniformLocation(prog, 'coefA2'), 3);
+    gl.uniform1i(gl.getUniformLocation(prog, 'coefB2'), 4);
+    this.uKt = gl.getUniformLocation(prog, 'kt');
     this.uSplit = gl.getUniformLocation(prog, 'split');
     this.uMode = gl.getUniformLocation(prog, 'mode');
     this.uAmount = gl.getUniformLocation(prog, 'amount');
@@ -86,10 +91,11 @@ export class GLPlayer {
     this.hasCoeffs = false;
   }
 
-  /** a、b：RGBA float32（cw × ch，第 0 列在上） */
-  setCoeffs(a, b, cw, ch) {
+  /** a、b：RGBA float32（cw × ch，第 0 列在上）。slot 1 = 內插的另一端（setKeyMix 設比例） */
+  setCoeffs(a, b, cw, ch, slot = 0) {
     const gl = this.gl;
-    for (const [unit, data] of [[1, a], [2, b]]) {
+    if (slot === 0) this.setKeyMix(0);
+    for (const [unit, data] of slot ? [[3, a], [4, b]] : [[1, a], [2, b]]) {
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, this.tex[unit]);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, cw, ch, 0, gl.RGBA, gl.FLOAT, data);
@@ -104,14 +110,19 @@ export class GLPlayer {
     if (rows) rows.forEach((r, i) => gl.uniform4f(this.uM[i], r[0], r[1], r[2], r[3]));
   }
 
-  /** 深度模型的係數（net.js estimate 的 g：nw×nh 的 a、b 三個平面）→ 係數貼圖 */
-  setNetCoeffs(g) {
+  /** 係數 g（net.js 的格式：nw×nh 的 a、b 三個平面）→ 係數貼圖 */
+  setNetCoeffs(g, slot = 0) {
     const n = g.nw * g.nh, A = new Float32Array(4 * n), B = new Float32Array(4 * n);
     for (let c = 0; c < 3; c++) {
       const a = g.a[c], b = g.b[c];
       for (let i = 0; i < n; i++) { A[4 * i + c] = a[i]; B[4 * i + c] = b[i]; }
     }
-    this.setCoeffs(A, B, g.nw, g.nh);
+    this.setCoeffs(A, B, g.nw, g.nh, slot);
+  }
+
+  /** 關鍵幀 g0 → g1 之間的比例 t（兩組係數各上傳一次，每格只改 t） */
+  setKeyMix(t) {
+    this.gl.uniform1f(this.uKt, t);
   }
 
   /** source：<video> 或 <canvas>；opts：{ split, mode: 'split'|'result'|'original', amount, pre } */

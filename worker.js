@@ -8,7 +8,7 @@
 import * as C from './lib/core.js';
 import { Processor } from './lib/pipeline.js';
 import { METHODS, byId, defaults } from './lib/methods/index.js';
-import { affine } from './lib/methods/net.js';
+import { affine, fitG } from './lib/methods/net.js';
 import { uiqm, uciqe } from './lib/metrics.js';
 
 const sessions = new Map(); // 模型檔 → InferenceSession
@@ -224,6 +224,12 @@ self.onmessage = async (e) => {
       const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
       const g = await meth.estimate(img, { ...defaults(meth), ...(m.params || {}) }, ctx);
       postMessage({ type: 'estimate', id: m.id, g });
+    } else if (m.type === 'keyfit') {
+      // 快速匯出的關鍵幀：小圖完整處理 → 擬合局部仿射係數
+      await ensureModel(m.opts.method);
+      const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
+      const r = await new Processor(ctx).run(img, { ...m.opts, video: null, mix: 1 });
+      postMessage({ type: 'keyfit', id: m.id, g: fitG(img, r.out) });
     } else if (m.type === 'prefetch') {
       await prefetchAll();
     } else if (m.type === 'compare') {
