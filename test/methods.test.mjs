@@ -105,3 +105,13 @@ test('關鍵幀內插：數字、陣列、Float32Array、物件都逐欄位線�
   assert.equal(interpKeys(keys, -1), A);
   assert.equal(interpKeys(keys, 9), B);
 });
+
+test('每個滑桿與下拉選單都有說明（從小到大、適用情境、建議值）', async () => {
+  const { HELP, paramHelp } = await import('../lib/help.js');
+  for (const id of ['tTau', 'tDef', 'tEvery', 'mix', 'post']) assert.ok(HELP[id], `共用設定 ${id} 缺說明`);
+  for (const m of METHODS) for (const p of m.params) {
+    const h = paramHelp(m, p.key);
+    assert.ok(h, `${m.id}.${p.key} 缺說明`);
+    for (const k of ['low', 'high', 'use', 'rec']) assert.ok(h[k] && h[k].length > 4, `${m.id}.${p.key}.${k} 空白`);
+  }
+});

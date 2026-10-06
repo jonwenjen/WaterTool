@@ -1,6 +1,7 @@
 // WaterTool 介面：載入影片/照片 → 背景執行緒還原 → 分割比較 → 匯出。
 import { METHODS, byId, defaults } from './lib/methods/index.js';
 import { INFO } from './lib/methods/info.js';
+import { HELP, paramHelp, helpHtml } from './lib/help.js';
 import { syntheticClip } from './lib/synth.js';
 import * as C from './lib/core.js';
 import { GLPlayer } from './player-gl.js';
@@ -860,7 +861,7 @@ function renderParams() {
     wrap.className = 'ctl';
     const id = `p_${p.key}`;
     if (p.options) {
-      wrap.innerHTML = `<label for="${id}">${p.label}</label><select id="${id}">${p.options.map(([v, t]) => `<option value="${v}"${v === vals[p.key] ? ' selected' : ''}>${t}</option>`).join('')}</select>`;
+      wrap.innerHTML = `<label for="${id}">${p.label}</label><select id="${id}">${p.options.map(([v, t]) => `<option value="${v}"${v === vals[p.key] ? ' selected' : ''}>${t}</option>`).join('')}</select>${helpHtml(paramHelp(m, p.key))}`;
       wrap.querySelector('select').addEventListener('change', (e) => { vals[p.key] = +e.target.value; onParamChange(); });
       box.append(wrap);
       continue;
@@ -868,7 +869,7 @@ function renderParams() {
     const isAuto = p.auto && vals[p.key] < 0;
     wrap.innerHTML = `<label for="${id}">${p.label} <output>${isAuto ? '自動' : fmt(vals[p.key], p.step)}</output></label>
       <input type="range" id="${id}" min="${p.min}" max="${p.max}" step="${p.step}" value="${isAuto ? (p.min + p.max) / 2 : vals[p.key]}" ${isAuto ? 'disabled' : ''}>
-      ${p.auto ? `<label class="auto"><input type="checkbox" ${isAuto ? 'checked' : ''}> 自動判斷</label>` : ''}`;
+      ${p.auto ? `<label class="auto"><input type="checkbox" ${isAuto ? 'checked' : ''}> 自動判斷</label>` : ''}${helpHtml(paramHelp(m, p.key))}`;
     const range = wrap.querySelector('input[type=range]'), out = wrap.querySelector('output');
     range.addEventListener('input', () => {
       vals[p.key] = +range.value;
@@ -966,6 +967,8 @@ const ui = saved.ui || {};
 if (ui.tOn !== undefined) $('tOn').checked = ui.tOn;
 for (const k of ['tTau', 'tDef', 'tEvery', 'mix', 'post']) if (ui[k] !== undefined) $(k).value = String(ui[k]);
 for (const k of ['prevRes', 'outRes', 'netExp']) if (ui[k] !== undefined) $(k).value = ui[k];
+// 共用滑桿的說明（從小到大的效果、適用情境、建議值）
+for (const id of ['tTau', 'tDef', 'tEvery', 'mix', 'post']) $(id).closest('.ctl').insertAdjacentHTML('beforeend', helpHtml(HELP[id]));
 bindRange('tTau', (v) => (v === 0 ? '關' : `${v.toFixed(2)} 秒`));
 bindRange('tDef', (v) => (v === 0 ? '關' : `${Math.round(v * 100)}%`));
 bindRange('tEvery', (v) => `${v}`);
