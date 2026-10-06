@@ -368,6 +368,9 @@ function resetTemporal() {
 const glview = $('glview');
 const fitCanvas = document.createElement('canvas'), fctx = fitCanvas.getContext('2d', { willReadFrequently: true });
 const FIT_EDGE = 320;
+// 播放用係數的平滑半徑 = 長邊 / FIT_DIV。色彩更新比影片慢（手機上常要 0.3–2 秒），太細的局部轉換套到已經移動的畫面上
+// 會一塊塊對不上、看起來顏色亂跳；較粗的轉換穩很多（scripts/preview-accuracy.mjs：NU²-Net 跳動 1.71 → 0.18）。
+const FIT_DIV = 12;
 let gl = null; // null = 還沒試；false = 不支援（改用逐幀處理）
 // 手機記憶體吃緊或切到背景時，瀏覽器會收回 WebGL 畫布（context lost）：畫面會停住不動。
 // 收回時改用逐幀處理；恢復後下次播放再用 GPU。
@@ -402,6 +405,7 @@ function startGL() {
   glview.width = view.width = w; // 兩個畫布同尺寸，分割線位置才一致
   glview.height = view.height = h;
   g.resetCoeffs();
+  ramp = null;
   const seeded = hasResult && resFresh && orig.width > 0 ? seedFromPaused() : Promise.resolve();
   $('stTime').textContent = matrixG() ? `播放：GPU 即時套用 · ${track.keys.length} 個關鍵幀線性內插` : '播放：GPU 即時套用 · 色彩計算中…';
   glview.hidden = false;
@@ -425,15 +429,40 @@ async function seedFromPaused() {
   try {
     const src = take(orig), out = take(res);
     const r = await call({ type: 'fitPair', src, out, w, h }, [src, out]);
-    if (glActive()) gl.setCoeffs(new Float32Array(r.a), new Float32Array(r.b), r.w, r.h);
+    if (glActive()) setFitCoeffs(new Float32Array(r.a), new Float32Array(r.b), r.w, r.h, true);
   } catch { /* 沒有也沒關係，等第一次更新 */ }
 }
 /** 播放時可以直接用全域色彩矩陣的情況（Diverout_sim 關鍵幀已備妥、沒開共用自動色階） */
 function matrixG(t = current()) {
   return +$('post').value === 0 ? keyG(t) : null;
 }
+// 播放時色彩更新的平滑過渡：新的係數不直接換上去（會跳一下），而是從「目前顯示的係數」在 GPU 上線性過渡到新係數，
+// 過渡時間 = 兩次更新的間隔（和匯出的關鍵幀內插同一個道理）。換鏡頭時直接換。
+let ramp = null; // { fa, fb, ta, tb, w, h, t0, dur }
+let fitPeriod = 400;
+const rampK = (now) => (!ramp || ramp.dur <= 0 ? 1 : Math.min(1, (now - ramp.t0) / ramp.dur));
+function setFitCoeffs(A, B, w, h, snap = false) {
+  const now = performance.now();
+  if (ramp && !snap && !globalThis.__noRamp && ramp.w === w && ramp.h === h) { // __noRamp：量測用（關掉過渡）
+    fitPeriod = fitPeriod * 0.7 + Math.min(2000, now - ramp.t0) * 0.3;
+    const k = rampK(now), fa = new Float32Array(A.length), fb = new Float32Array(B.length);
+    for (let i = 0; i < A.length; i++) {
+      fa[i] = ramp.fa[i] + (ramp.ta[i] - ramp.fa[i]) * k;
+      fb[i] = ramp.fb[i] + (ramp.tb[i] - ramp.fb[i]) * k;
+    }
+    gl.setCoeffs(fa, fb, w, h, 0);
+    gl.setCoeffs(A, B, w, h, 1);
+    ramp = { fa, fb, ta: A, tb: B, w, h, t0: now, dur: Math.max(120, Math.min(1500, fitPeriod)) };
+  } else {
+    gl.setCoeffs(A, B, w, h, 0);
+    gl.setCoeffs(A, B, w, h, 1);
+    ramp = { fa: A, fb: B, ta: A, tb: B, w, h, t0: now, dur: 0 };
+  }
+}
+
 function renderGL(t) {
   if (!glActive()) return;
+  if (ramp) gl.setKeyMix(rampK(performance.now()));
   state.glFrames = (state.glFrames || 0) + 1;
   const g = matrixG(t ?? current());
   gl.setMatrix(g ? diverMatrix(g) : null);
@@ -472,9 +501,10 @@ async function fitLoop() {
       lastFitTime = t;
       const data = fctx.getImageData(0, 0, w, h);
       const t0 = performance.now();
-      const r = await call({ type: 'fit', rgba: data.data.buffer, w, h, opts: buildOpts(dt) }, [data.data.buffer]);
+      if (globalThis.__fitDelay) await new Promise((ok) => setTimeout(ok, globalThis.__fitDelay)); // 量測用：模擬慢裝置
+      const r = await call({ type: 'fit', rgba: data.data.buffer, w, h, opts: buildOpts(dt), div: globalThis.__fitDiv || FIT_DIV }, [data.data.buffer]);
       if (!state.playing || !glActive() || matrixG()) break;
-      gl.setCoeffs(new Float32Array(r.a), new Float32Array(r.b), r.w, r.h);
+      setFitCoeffs(new Float32Array(r.a), new Float32Array(r.b), r.w, r.h, r.info && r.info.cut);
       state.fits = (state.fits || 0) + 1;
       if (state.src.kind === 'demo') renderGL();
       $('stMethod').innerHTML = `<b>${byId[state.method].name}</b>`;
@@ -1280,6 +1310,8 @@ placeOverlay();
 window.__watertool = { // 給自動化測試用
   state, call, renderGL, select: (id) => selectMethod(id),
   origCanvas: () => orig,
+  // 測試用：用目前（含過渡中）的色彩轉換套用一張固定畫面，量「轉換本身」的跳動
+  probeGL: (src) => { if (!glActive()) return false; if (ramp) gl.setKeyMix(rampK(performance.now())); gl.draw(src, { mode: 'result' }); return true; },
   glState: () => (gl === null ? 'null' : gl === false ? 'false' : 'ok') + (glview.hidden ? ' hidden' : ' shown'),
   hangWorker: (ms) => { WATCHDOG = ms; worker.postMessage({ type: 'hang', debug: 'hang-test' }); },
   keyInfo: () => ({ ready: !!(track && track.ready && keyG(0)), keys: track ? track.keys.length : 0, matrix: glActive() && !!matrixG() }),

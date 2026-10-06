@@ -147,8 +147,8 @@ async function ensureModel(method) {
 
 let lastFit = null;
 /** 原圖 → 結果 的逐通道局部仿射係數（RGBA float32，可直接上傳成紋理）；非換鏡頭時與上一組做輕度平滑 */
-function fitCoeffs(src, out, cut) {
-  const { w, h } = src, n = w * h, r = Math.max(2, Math.round(Math.max(w, h) / 32));
+function fitCoeffs(src, out, cut, div = 32) {
+  const { w, h } = src, n = w * h, r = Math.max(2, Math.round(Math.max(w, h) / div));
   const A = new Float32Array(n * 4), B = new Float32Array(n * 4);
   for (let c = 0; c < 3; c++) {
     const [ac, bc] = affine(src.c[c], out.c[c], w, h, r, 1e-4);
@@ -221,8 +221,10 @@ async function handle(e) {
       await ensureModel(m.opts.method);
       const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
       const r = await slots.preview.run(img, m.opts);
-      const { a, b } = fitCoeffs(img, r.out, r.cut);
-      postMessage({ type: 'fit', id: m.id, a: a.buffer, b: b.buffer, w: m.w, h: m.h, info: { ms: r.ms, cut: r.cut } }, [a.buffer, b.buffer]);
+      // 真的換鏡頭（畫面直方圖差很多）才直接切換；方法內部不可內插的參數改變（例如 MLLE 的通道排序）照樣平滑過渡
+      const cut = r.cut && r.dist > 0.5;
+      const { a, b } = fitCoeffs(img, r.out, cut, m.div);
+      postMessage({ type: 'fit', id: m.id, a: a.buffer, b: b.buffer, w: m.w, h: m.h, info: { ms: r.ms, cut } }, [a.buffer, b.buffer]);
     } else if (m.type === 'fitPair') {
       // 播放一開始：直接用暫停畫面已算好的完整結果擬合係數（不必等方法重算，深度模型也立即有顏色）
       const src = C.fromRGBA(new Uint8ClampedArray(m.src), m.w, m.h), out = C.fromRGBA(new Uint8ClampedArray(m.out), m.w, m.h);
