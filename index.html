@@ -104,7 +104,8 @@
           <div class="ctl"><label for="aspect">裁切比例</label><select id="aspect"></select></div>
           <div class="ctl" id="panXc"><label for="panX">水平位置 <output id="panXV"></output></label><input type="range" id="panX" min="0" max="1" step="0.01" value="0.5"></div>
           <div class="ctl" id="panYc"><label for="panY">垂直位置 <output id="panYV"></output></label><input type="range" id="panY" min="0" max="1" step="0.01" value="0.5"></div>
-          <canvas id="editPreview" class="editprev" width="320" height="180" aria-label="裁切預覽"></canvas>
+          <canvas id="editPreview" class="editprev" width="320" height="180" aria-label="裁切預覽：拖曳框可移動裁切位置"></canvas>
+          <p class="note center">白框 = 匯出範圍，直接拖曳可移動（暫停時的畫面）</p>
           <div class="vidonly">
             <div class="ctl"><label for="speed">速度 <output id="speedV"></output></label><input type="range" id="speed" min="0.25" max="4" step="0.25" value="1"></div>
             <div class="ctl"><label for="audioMode">聲音</label>

@@ -83,6 +83,22 @@ await page.waitForTimeout(1500);
 const pv = await page.evaluate(() => ({ rate: document.getElementById('video').playbackRate, t: document.getElementById('video').currentTime }));
 await page.click('#play');
 ok(pv.rate === 2 && pv.t > 6, `預覽：2× 播放並跳過 1–6 秒（播放 1.5 秒後位於 ${pv.t.toFixed(2)} 秒）`);
+// 4b. 在裁切預覽上拖曳：9:16 的框往左拖到底 → 水平位置 0%，往右 → 100%
+await page.click('#editReset');
+await page.selectOption('#aspect', '9:16');
+await page.waitForTimeout(200);
+await page.locator('#editPreview').scrollIntoViewIfNeeded();
+const box = await page.locator('#editPreview').boundingBox();
+const drag = async (dx) => {
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2, { steps: 5 });
+  await page.mouse.up();
+  return page.evaluate(() => ({ panX: window.__watertool.state.edit.panX, slider: +document.getElementById('panX').value }));
+};
+const l = await drag(-box.width), r = await drag(box.width), m = await drag(-box.width * 0.2);
+ok(l.panX === 0 && r.panX === 1 && m.panX > 0.2 && m.panX < 0.9 && Math.abs(m.slider - m.panX) <= 0.005, `拖曳裁切框：往左到底 ${l.panX}、往右到底 ${r.panX}、往回一點 ${m.panX.toFixed(2)}（滑桿同步）`);
+
 // 5. 逐格完整計算 + 4× + 1:1
 await page.click('#editReset');
 await page.selectOption('#netExp', '0');
@@ -104,6 +120,8 @@ await setVal('trimStart', 0);
 await setVal('trimEnd', 1);
 const f6 = await exportTo('net025');
 const [w6, h6] = probe(f6, 'v:0', 'stream=width,height').split(',').map(Number), d6 = +probe(f6, 'v:0', 'stream=duration'), a6 = +probe(f6, 'a:0', 'stream=duration');
+const le6 = await page.evaluate(() => window.__watertool.state.lastExport);
+ok(le6.keys === 3, `只保留 0–1 秒時只替這 1 秒算關鍵幀：${le6.keys} 個（整支 ${srcDur.toFixed(0)} 秒要 ${Math.ceil(srcDur / 0.5) + 1} 個）`);
 ok(w6 === 202 && h6 === 360 && Math.abs(d6 - 4) < 0.2 && Math.abs(a6 - 4) < 0.25, `深度模型 + 9:16 + 0.25×：${w6}×${h6}、畫面 ${d6.toFixed(2)} 秒、聲音 ${a6.toFixed(2)} 秒（應約 4）`);
 
 // 7. 照片：左轉 90° + 1:1

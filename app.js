@@ -7,7 +7,7 @@ import { syntheticClip } from './lib/synth.js';
 import * as C from './lib/core.js';
 import { GLPlayer } from './player-gl.js';
 import { diverMatrix } from './lib/methods/diverout.js';
-import { interpKeys, keyframeTimes, keyframeIndices } from './lib/keyframes.js';
+import { interpKeys, keyframeTimes, keyframeTimesIn, keyframeIndices } from './lib/keyframes.js';
 
 const $ = (id) => document.getElementById(id);
 const fmtTime = (s) => (Number.isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00');
@@ -227,7 +227,7 @@ async function buildTrack(t, stale) {
  * 整支片每隔 interval 秒取一個關鍵幀（長邊 edge），由背景執行緒估計參數 → [{ t, g }]。
  * 影片另開一個看不見的 <video> 逐一跳過去（不影響正在看的畫面）。stale() 為真時中止。
  */
-async function collectKeys(src, method, params, interval, edge, stale, note, msg = { type: 'estimate', method, params }) {
+async function collectKeys(src, method, params, interval, edge, stale, note, msg = { type: 'estimate', method, params }, segs = null) {
   const keys = [];
   const estimateAt = async (draw, time) => {
     const [w, h] = C.fitSize(src.w, src.h, edge);
@@ -261,7 +261,7 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
     const vt = await input.getPrimaryVideoTrack();
     if (!vt || !(await vt.canDecode())) throw new Error('無法解碼');
     const t0 = await vt.getFirstTimestamp(), D = (await vt.computeDuration()) - t0;
-    const times = keyframeTimes(D, interval), [w, h] = C.fitSize(src.w, src.h, edge);
+    const times = segs ? keyframeTimesIn(segs, interval) : keyframeTimes(D, interval), [w, h] = C.fitSize(src.w, src.h, edge);
     const sink = new MB.CanvasSink(vt, { width: w, height: h, fit: 'fill', poolSize: 1 });
     let j = 0;
     // 最後一個關鍵幀取最後一幀（時間 = 片長時解碼器回傳最後一幀）
@@ -292,7 +292,7 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
     const loaded = wait(kv, 'loadeddata', 10000, '瀏覽器沒有載入影片資料，無法分析關鍵幀');
     kv.load();
     await loaded;
-    const D = kv.duration || video.duration || 0, times = keyframeTimes(D, interval);
+    const D = kv.duration || video.duration || 0, times = segs ? keyframeTimesIn(segs, interval) : keyframeTimes(D, interval);
     for (const [j, time] of times.entries()) {
       if (stale()) return keys;
       note(j + 1, times.length);
@@ -1130,7 +1130,7 @@ function fastExport() {
  *   快速（fastExport）：關鍵幀完整計算一次 → GPU 依時間內插套用（深度模型係數／Diverout_sim 矩陣／其他方法擬合的係數）
  *   逐格：每一格都交給背景執行緒完整計算（含時間平滑）
  */
-async function buildColorizer(pw, ph, isCanceled) {
+async function buildColorizer(pw, ph, isCanceled, segs = null) {
   const method = state.method, m = byId[method], params = { ...state.params[method] }, interval = +$('netExp').value;
   const post = +$('post').value, mix = +$('mix').value;
   if (!fastExport()) {
@@ -1157,7 +1157,7 @@ async function buildColorizer(pw, ph, isCanceled) {
     keys = await collectKeys(state.src, method, params, interval, 640, isCanceled, (i, n) => {
       $('prog').value = ((i - 1) / n) * 0.5;
       $('exportNote').textContent = `${m.short}：關鍵幀 ${i}/${n}（每 ${interval} 秒完整計算一次）`;
-    }, msg);
+    }, msg, segs); // 有時間裁切時只在保留的區段排關鍵幀
   }
   const glc = new OffscreenCanvas(pw, ph), g = new GLPlayer(glc, { preserve: true });
   const pre = kind === 'net' ? params.amount : 1;
@@ -1316,16 +1316,66 @@ function enforceTrim(starting = false) {
   return false;
 }
 video.addEventListener('timeupdate', () => { if (state.playing) enforceTrim(); });
-/** 右側的裁切預覽：目前畫面（暫停時的還原結果）旋轉、裁切後的樣子 */
+/**
+ * 裁切預覽：整個畫面（暫停時的還原結果，已旋轉）＋裁切框，框外變暗。直接拖曳就能移動裁切位置。
+ */
+let previewGeom = null; // { s, crop }：預覽畫布像素 ↔ 畫面像素
 function drawEditPreview() {
   const c = $('editPreview');
   if (!state.src || !orig.width) return;
   const E = state.edit, src = hasResult ? res : orig, w = src.width, h = src.height;
-  const crop = cropRect(w, h, E.rot, E.aspect, E.panX, E.panY);
-  const s = Math.min(1, 320 / Math.max(crop.cw, crop.ch));
-  const pw = Math.max(2, Math.round(crop.cw * s)), ph = Math.max(2, Math.round(crop.ch * s));
+  const full = cropRect(w, h, E.rot, 'orig'), crop = cropRect(w, h, E.rot, E.aspect, E.panX, E.panY);
+  const s = Math.min(1, 320 / Math.max(full.rw, full.rh));
+  const pw = Math.max(2, Math.round(full.rw * s)), ph = Math.max(2, Math.round(full.rh * s));
   if (c.width !== pw || c.height !== ph) { c.width = pw; c.height = ph; }
-  drawEdited(c.getContext('2d'), src, w, h, crop, pw, ph);
+  const x = c.getContext('2d');
+  drawEdited(x, src, w, h, full, pw, ph);
+  const bx = crop.x * s, by = crop.y * s, bw = crop.cw * s, bh = crop.ch * s;
+  x.fillStyle = 'rgba(0,0,0,.6)'; // 框外變暗
+  x.fillRect(0, 0, pw, by);
+  x.fillRect(0, by + bh, pw, ph - by - bh);
+  x.fillRect(0, by, bx, bh);
+  x.fillRect(bx + bw, by, pw - bx - bw, bh);
+  x.strokeStyle = '#fff';
+  x.lineWidth = 2;
+  x.strokeRect(bx + 1, by + 1, bw - 2, bh - 2);
+  if (E.aspect !== 'orig') { // 三分線
+    x.strokeStyle = 'rgba(255,255,255,.35)';
+    x.lineWidth = 1;
+    x.beginPath();
+    for (const f of [1 / 3, 2 / 3]) {
+      x.moveTo(bx + bw * f, by); x.lineTo(bx + bw * f, by + bh);
+      x.moveTo(bx, by + bh * f); x.lineTo(bx + bw, by + bh * f);
+    }
+    x.stroke();
+  }
+  c.classList.toggle('draggable', crop.cw < crop.rw || crop.ch < crop.rh);
+  previewGeom = { s, crop };
+}
+// 拖曳裁切框（滑鼠、觸控都可以）：移動量換算成畫面像素，再換成水平／垂直位置
+{
+  const c = $('editPreview');
+  let drag = null;
+  c.addEventListener('pointerdown', (e) => {
+    if (!previewGeom) return;
+    const { crop } = previewGeom;
+    drag = { x: e.clientX, y: e.clientY, cx: crop.x, cy: crop.y, crop };
+    c.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  c.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const r = c.getBoundingClientRect(), k = c.width / r.width / previewGeom.s; // CSS 像素 → 畫面像素
+    const { crop } = drag, E = state.edit;
+    if (crop.rw > crop.cw) E.panX = Math.min(1, Math.max(0, (drag.cx + (e.clientX - drag.x) * k) / (crop.rw - crop.cw)));
+    if (crop.rh > crop.ch) E.panY = Math.min(1, Math.max(0, (drag.cy + (e.clientY - drag.y) * k) / (crop.rh - crop.ch)));
+    $('panX').value = String(E.panX);
+    $('panY').value = String(E.panY);
+    updateEditUi();
+  });
+  const end = () => { drag = null; };
+  c.addEventListener('pointerup', end);
+  c.addEventListener('pointercancel', end);
 }
 $('rotL').onclick = () => { state.edit.rot = (state.edit.rot + 270) % 360; syncEditUi(); };
 $('rotR').onclick = () => { state.edit.rot = (state.edit.rot + 90) % 360; syncEditUi(); };
@@ -1358,7 +1408,7 @@ async function exportEdited() {
   const [ow, oh] = outSize(full.cw, full.ch);
   const k = Math.min(1, ow / full.cw); // 調色在「剛好夠裁出輸出尺寸」的解析度上做
   const pw = even(w * k), ph = even(h * k), crop = cropRect(pw, ph, E.rot, E.aspect, E.panX, E.panY);
-  const col = await buildColorizer(pw, ph, () => canceled);
+  const col = await buildColorizer(pw, ph, () => canceled, segs);
   let output = null;
   try {
     if (canceled) throw cancelErr();
@@ -1404,7 +1454,7 @@ async function exportEdited() {
     vsrc.close();
     if (asrc) asrc.close();
     await output.finalize();
-    state.lastExport = { edited: true, kind: col.kind, frames, w: ow, h: oh, duration: total, audio: !!asrc };
+    state.lastExport = { edited: true, kind: col.kind, keys: col.keys.length, frames, w: ow, h: oh, duration: total, audio: !!asrc };
     download(new Blob([output.target.buffer], { type: 'video/mp4' }), baseName() + '.mp4');
   } catch (err) {
     if (output && output.state !== 'finalized') await output.cancel().catch(() => {});

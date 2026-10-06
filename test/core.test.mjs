@@ -92,3 +92,10 @@ test('編輯：聲音變速重取樣 —— 長度正確、分塊連續', async 
     assert.ok(maxErr < 0.01, `${speed}×：最大誤差 ${maxErr}`);
   }
 });
+
+test('時間裁切後只在保留區段排關鍵幀', async () => {
+  const { keyframeTimesIn } = await import('../lib/keyframes.js');
+  assert.deepEqual(keyframeTimesIn([[0, 60]], 0.5).length, 121);
+  assert.deepEqual(keyframeTimesIn([[2, 5]], 0.5), [2, 2.5, 3, 3.5, 4, 4.5, 5]); // 60 秒片只保留 3 秒：7 個而不是 121 個
+  assert.deepEqual(keyframeTimesIn([[0, 1], [4, 5]], 1), [0, 1, 4, 5]);
+});
