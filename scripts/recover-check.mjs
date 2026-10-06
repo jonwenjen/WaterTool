@@ -29,13 +29,49 @@ await page.evaluate(() => { const v = document.getElementById('video'); v.curren
 await page.waitForTimeout(300);
 await page.click('#play');
 await page.waitForTimeout(800);
-await page.evaluate(() => document.getElementById('glview').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext());
+await page.evaluate(() => { window.__lose = document.getElementById('glview').getContext('webgl2').getExtension('WEBGL_lose_context'); window.__lose.loseContext(); });
 const ta = await page.evaluate(() => document.getElementById('video').currentTime);
 await page.waitForTimeout(1200);
 const st = await page.evaluate(() => ({ t: document.getElementById('video').currentTime, gl: !document.getElementById('glview').hidden, view: !document.getElementById('view').hidden, playing: window.__watertool.state.playing }));
 ok(st.playing && st.t > ta + 0.5 && !st.gl && st.view, `GPU 畫布被收回後改逐幀處理、影片繼續播放（${ta.toFixed(2)} → ${st.t.toFixed(2)} 秒）`);
 await page.click('#play');
 await page.waitForFunction(() => document.getElementById('busy').hidden, null, { timeout: 60000 });
+await page.evaluate(() => window.__lose.restoreContext()); // GPU 恢復 → 下次播放再用 GPU
+await page.waitForTimeout(300);
+
+// (3) 播放中背景卡死 → 重啟後播放時的色彩計算要自己接回來（不能停在「色彩計算中…」）
+await page.evaluate(() => window.__watertool.select('rghs'));
+await page.waitForFunction(() => document.getElementById('busy').hidden, null, { timeout: 60000 });
+await page.evaluate(() => { const v = document.getElementById('video'); v.currentTime = 0; });
+await page.waitForTimeout(300);
+await page.click('#play');
+await page.waitForFunction(() => /色彩每/.test(document.getElementById('stTime').textContent), null, { timeout: 20000 }).catch(() => {});
+await page.evaluate(() => window.__watertool.hangWorker(2000));
+const fitsBefore = await page.evaluate(() => window.__watertool.state.fits || 0);
+const resumed = await page.waitForFunction((n) => window.__watertool.state.restarts === 2 && (window.__watertool.state.fits || 0) > n + 1, fitsBefore, { timeout: 30000 }).then(() => true, () => false);
+const st3 = await page.textContent('#stTime');
+ok(resumed, `播放中背景卡死 → 重啟後色彩計算自動接回（${st3}）`);
+// (4) 播放中換方法 → 下一次計算就用新方法
+await page.evaluate(() => window.__watertool.select('mlle'));
+const switched = await page.waitForFunction(() => /MLLE/.test(document.getElementById('stMethod').textContent) && /色彩每/.test(document.getElementById('stTime').textContent), null, { timeout: 20000 }).then(() => true, () => false);
+ok(switched, '播放中換方法 → 色彩改用新方法計算');
+// (5) 暫停瞬間的暫時畫面必須是「這一格」：原片暫時畫面 = 目前影片畫面
+await page.click('#play');
+const same = await page.evaluate(() => {
+  const o = document.createElement('canvas'), v = document.getElementById('video');
+  const w = 160, h = 90;
+  o.width = w; o.height = h;
+  const x = o.getContext('2d', { willReadFrequently: true });
+  x.drawImage(v, 0, 0, w, h);
+  const a = x.getImageData(0, 0, w, h).data;
+  x.drawImage(window.__watertool.origCanvas(), 0, 0, w, h);
+  const b = x.getImageData(0, 0, w, h).data;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]);
+  return d / a.length;
+});
+ok(same < 6, `暫停後分割畫面用的是目前這一格（平均差 ${same.toFixed(2)}）`);
+await page.waitForFunction(() => document.getElementById('busy').hidden && /估計/.test(document.getElementById('stTime').textContent), null, { timeout: 60000 });
 ok(errors.length === 0, `沒有頁面錯誤 ${errors.join(' | ')}`);
 await browser.close(); server.close();
 process.exit(fails ? 1 : 0);

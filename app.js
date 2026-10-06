@@ -25,8 +25,9 @@ function call(msg, transfer = []) {
   });
 }
 function onWorkerMessage(e) {
-  lastHeard = performance.now();
   const m = e.data;
+  // 只有回覆請求（或 alive）才算「有在處理」；模型下載進度不算，否則卡死時看門狗會被騙過
+  if (m.type !== 'prefetch' && m.type !== 'model') lastHeard = performance.now();
   if (m.type === 'alive') return;
   if (m.type === 'model') return onModel(m);
   if (m.type === 'prefetch') return onPrefetch(m);
@@ -64,6 +65,7 @@ function restartWorker() {
   setTimeout(() => {
     resetTemporal();
     if (state.src && !state.playing) processFrame(null);
+    if (state.playing && glActive()) fitLoop();
     ensureTrack();
   }, 0);
 }
@@ -411,16 +413,27 @@ function renderGL(t) {
 }
 function stopGL() {
   if (!glActive()) return;
-  renderGL(); // 把最後一格複製到 2D 畫布，切換時不閃
-  vctx.drawImage(glview, 0, 0, view.width, view.height);
+  // 暫停瞬間：把「這一格」的原片與 GPU 結果存成暫時畫面 —— 切換時不閃，完整計算完成前拖分隔線也是同一格
+  // （以前會露出上一次暫停時算好的舊畫面）。完整計算完成後由 processFrame 取代。
+  const w = glview.width, h = glview.height, g = matrixG();
+  orig.width = res.width = w;
+  orig.height = res.height = h;
+  octx.drawImage(playSource(), 0, 0, w, h);
+  gl.setMatrix(g ? diverMatrix(g) : null);
+  gl.draw(playSource(), { mode: 'result', amount: g ? +$('mix').value : 1 });
+  rctx.drawImage(glview, 0, 0, w, h);
+  hasResult = true;
+  resFresh = false;
   glview.hidden = true;
   view.hidden = false;
+  draw();
 }
 
 let fitRunning = false, lastFitTime = null;
 async function fitLoop() {
   if (fitRunning) return;
   fitRunning = true;
+  let failed = false;
   try {
     while (state.playing && glActive() && !matrixG()) {
       const [w, h] = C.fitSize(state.src.w, state.src.h, FIT_EDGE);
@@ -441,9 +454,12 @@ async function fitLoop() {
     }
   } catch (err) {
     showError(err.message);
+    failed = true;
   } finally {
     fitRunning = false;
   }
+  // 出錯（例如背景執行緒剛被重新啟動）而且還在播放：稍後自己接回來，不要停在「色彩計算中…」
+  if (failed && state.playing && glActive()) setTimeout(fitLoop, 300);
 }
 
 // ---------------- 播放 ----------------
@@ -1233,6 +1249,8 @@ renderAbout();
 placeOverlay();
 window.__watertool = { // 給自動化測試用
   state, call, renderGL, select: (id) => selectMethod(id),
+  origCanvas: () => orig,
+  glState: () => (gl === null ? 'null' : gl === false ? 'false' : 'ok') + (glview.hidden ? ' hidden' : ' shown'),
   hangWorker: (ms) => { WATCHDOG = ms; worker.postMessage({ type: 'hang', debug: 'hang-test' }); },
   keyInfo: () => ({ ready: !!(track && track.ready && keyG(0)), keys: track ? track.keys.length : 0, matrix: glActive() && !!matrixG() }),
 };

@@ -88,9 +88,9 @@ function loadRuntime(onBytes) {
     const ort = await importRuntime(new URL('vendor/ort/ort.wasm.bundle.min.mjs', base).href);
     const wasm = await cachedDownload(new URL('vendor/ort/ort-wasm-simd-threaded.wasm', base).href, onBytes);
     // 多執行緒需要跨來源隔離（COOP/COEP 標頭）：GitHub Pages 不能設標頭，由 sw.js 補上；沒有就單執行緒
-    // 手機最多 2 條（每條執行緒都要記憶體），桌機最多 4 條
+    // 桌機最多 4 條。手機一律單執行緒：多執行緒在手機上會讓背景執行緒卡死（實際回報），穩定優先
     const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
-    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.max(1, Math.min(mobile ? 2 : 4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
+    ort.env.wasm.numThreads = self.crossOriginIsolated && !mobile ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
     ort.env.wasm.wasmBinary = wasm;
     return ort;
   })();
