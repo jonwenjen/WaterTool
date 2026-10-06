@@ -10,6 +10,11 @@ import { METHODS, defaults } from '../lib/methods/index.js';
 import { uiqm, uciqe, deltaE, psnr, ssim } from '../lib/metrics.js';
 import { Processor } from '../lib/pipeline.js';
 import { nodeRunNet } from './node-net.mjs';
+import { keysFromFrames, interpKeys } from '../lib/methods/diverout.js';
+
+// ONLY=a,b 只跑指定的方法（例：ONLY=diverout）
+const ONLY = process.env.ONLY ? process.env.ONLY.split(',') : null;
+const LIST = METHODS.filter((m) => !ONLY || ONLY.includes(m.id));
 
 const ctx = { runNet: await nodeRunNet() };
 const euvp = process.argv[2];
@@ -26,8 +31,8 @@ const scene = makeScene(640, 360);
 const rows = {};
 const head = ['方法', ...Object.values(WATERS).map((w) => `${w.name} ΔE`), '平均 ΔE', 'UIQM', 'UCIQE', '每幀 ms'];
 const inputs = Object.keys(WATERS).map((k) => degrade(scene, k));
-rows['（未處理）'] = { de: inputs.map((d) => deltaE(d, scene.img)), q: inputs.map(uiqm).map((x) => x.uiqm), c: inputs.map(uciqe), ms: 0 };
-for (const m of METHODS) {
+if (!ONLY) rows['（未處理）'] = { de: inputs.map((d) => deltaE(d, scene.img)), q: inputs.map(uiqm).map((x) => x.uiqm), c: inputs.map(uciqe), ms: 0 };
+for (const m of LIST) {
   const p = defaults(m), de = [], q = [], c = [];
   let ms = 0;
   for (const deg of inputs) {
@@ -63,8 +68,8 @@ if (euvp && existsSync(`${euvp}/A`)) {
     const ref = outs.map((o, i) => [o, imgs[i][1]]).filter((x) => x[1]);
     return `${f(avg(ref.map(([o, r]) => psnr(o, r))))} | ${f(avg(ref.map(([o, r]) => ssim(o, r))), 3)} | ${f(avg(ref.map(([o, r]) => deltaE(o, r))), 1)} | ${f(avg(outs.map((o) => uiqm(o).uiqm)))} | ${f(avg(outs.map(uciqe)), 3)}`;
   };
-  log(`| （未處理） | ${score(imgs.map((x) => x[0]))} |`);
-  for (const m of METHODS) {
+  if (!ONLY) log(`| （未處理） | ${score(imgs.map((x) => x[0]))} |`);
+  for (const m of LIST) {
     const outs = [];
     for (const [img] of imgs) outs.push((await new Processor(ctx).run(img, { method: m.id, params: defaults(m) })).out);
     log(`| ${m.name} | ${score(outs)} |`);
@@ -92,10 +97,15 @@ const [iw, ifl] = warp(clip.map((c) => c.frame), 2);
 log(`輸入本身：扭曲誤差 ${f(iw)}、亮度閃爍 ${f(ifl)}。\n`);
 log('| 方法 | 逐幀：扭曲誤差 | 逐幀：亮度閃爍 | 時間穩定：扭曲誤差 | 時間穩定：亮度閃爍 | 閃爍降低 |');
 log('|---|---|---|---|---|---|');
-for (const m of METHODS) {
+for (const m of LIST) {
+  // 關鍵幀方法（Diverout_sim）的「時間穩定」= 它自己的關鍵幀＋線性內插（30 fps）
+  const keys = m.keyframes ? keysFromFrames(clip.map((c) => c.frame), 30, defaults(m)) : null;
   const run = async (video) => {
     const proc = new Processor(ctx), outs = [];
-    for (const c of clip) outs.push((await proc.run(c.frame, { method: m.id, params: defaults(m), video })).out);
+    for (const [i, c] of clip.entries()) {
+      const g = video && keys ? interpKeys(keys, i / 30) : undefined;
+      outs.push((await proc.run(c.frame, { method: m.id, params: defaults(m), video: g ? null : video, g })).out);
+    }
     return warp(outs, 2);
   };
   const [w0, f0] = await run(null);

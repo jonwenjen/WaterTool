@@ -34,7 +34,7 @@ const waitIdle = () => page.waitForFunction(() => document.getElementById('busy'
 try {
   await page.goto(`http://localhost:${port}/`);
   const N = await page.evaluate(() => document.querySelectorAll('.method').length);
-  ok(N === 14, `列出 ${N} 種方法`);
+  ok(N === 15, `列出 ${N} 種方法`);
 
   // 合成示範
   await page.click('#demo');
@@ -69,8 +69,8 @@ try {
 
   // 七法比較
   await page.click('[data-view=compare]');
-  await page.waitForFunction(() => document.querySelectorAll('.tile canvas').length === 14, null, { timeout: 600000 });
-  ok(true, '全部比較顯示 14 張結果');
+  await page.waitForFunction(() => document.querySelectorAll('.tile canvas').length === 15, null, { timeout: 600000 });
+  ok(true, '全部比較顯示 15 張結果');
   await shot({ path: join(TMP, 'compare.png'), fullPage: true });
   await page.click('[data-view=split]');
 
@@ -101,6 +101,32 @@ try {
     const src = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', VIDEO]).toString().trim();
     const dst = execFileSync('ffprobe', ['-v', 'error', '-count_frames', '-show_entries', 'stream=codec_type,codec_name,width,height,nb_read_frames', '-of', 'compact', vOut]).toString().trim();
     ok(dst.includes(`nb_read_frames=${src}`), `影片匯出 MP4 幀數與原片相同（${src}）：${dst.replace(/\n/g, ' | ')}`);
+
+    // Diverout_sim：先分析整支片的關鍵幀 → 暫停預覽、GPU 色彩矩陣播放、匯出都用關鍵幀內插
+    await page.locator('.method').nth(14).click();
+    await page.waitForFunction(() => window.__watertool.keyInfo().ready, null, { timeout: 120000 });
+    await waitIdle();
+    const ki = await page.evaluate(() => window.__watertool.keyInfo());
+    ok(ki.keys === 4, `Diverout_sim 關鍵幀分析完成（3 秒片、每 1 秒 → ${ki.keys} 個）`);
+    await page.evaluate(() => new Promise((ok) => {
+      const v = document.getElementById('video');
+      v.addEventListener('seeked', ok, { once: true });
+      v.currentTime = 0;
+    }));
+    await waitIdle();
+    await page.click('#play');
+    await page.waitForTimeout(1500);
+    const mat = await page.evaluate(() => window.__watertool.keyInfo().matrix);
+    await page.click('#play');
+    await waitIdle();
+    ok(mat, 'Diverout_sim 播放時由 GPU 套用關鍵幀內插的色彩矩陣');
+    const [dl4] = await Promise.all([page.waitForEvent('download', { timeout: 600000 }), page.click('#export')]);
+    const dOut = join(TMP, 'diverout-export.mp4');
+    await dl4.saveAs(dOut);
+    const dInfo = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', dOut]).toString().trim();
+    ok(dInfo === src, `Diverout_sim 影片匯出幀數與原片相同（${dInfo}）`);
+    await page.locator('.method').nth(0).click();
+    await waitIdle();
   }
 
   // 真實照片截圖（PHOTO=路徑）：分割檢視 + 七法比較
@@ -111,7 +137,7 @@ try {
     await page.waitForTimeout(800);
     await shot({ path: join(OUT, 'photo-split.png') });
     await page.click('[data-view=compare]');
-    await page.waitForFunction(() => document.querySelectorAll('.tile canvas').length === 14, null, { timeout: 600000 });
+    await page.waitForFunction(() => document.querySelectorAll('.tile canvas').length === 15, null, { timeout: 600000 });
     await page.locator('#compare').screenshot({ path: join(OUT, 'photo-compare.png') });
     await page.click('[data-view=split]');
     ok(true, '真實照片截圖');

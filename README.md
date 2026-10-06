@@ -1,12 +1,12 @@
 # 🌊 WaterTool — 水下影片還原工作台
 
-把網路上**有論文、有 GitHub 原始碼**的水下影像還原方法整理出 14 種，重新實作成一個**純瀏覽器**的 App：
+把網路上**有論文、有 GitHub 原始碼**的水下影像還原方法整理出 14 種，再加上 DIVEROUT App 調色的反推模型（Diverout_sim），重新實作成一個**純瀏覽器**的 App：
 開啟水下影片或照片 → 選方法 → 分割畫面即時比較 → 匯出 MP4 / PNG。
 影片另外加了**時間一致性**（防閃爍），因為逐幀方法直接套在影片上最常見的問題就是閃爍。
 
 - **不上傳、不需伺服器**：所有運算在本機瀏覽器的背景執行緒完成。
 - **可安裝成 App**（PWA）：手機「加到主畫面」、桌面 Chrome「安裝」，安裝後可離線使用。
-- **14 種方法**：7 種傳統（物理模型 / 增強）+ 7 個深度學習模型（FUnIE-GAN、WaterNet、UVE-Net 與 4 個 UIEB 訓練模型，ONNX 在瀏覽器執行）。
+- **15 種方法**：7 種傳統（物理模型 / 增強）+ 7 個深度學習模型（FUnIE-GAN、WaterNet、UVE-Net 與 4 個 UIEB 訓練模型，ONNX 在瀏覽器執行）+ **Diverout_sim**（重現 DIVEROUT「高／超高／標準」調色）。
 - **每種方法都有客觀評測**：EUVP 真實照片與 UVE-38K 真實影片的 PSNR / SSIM、合成真值場景、閃爍量測（[`docs/results.md`](docs/results.md)、[`docs/results-video.md`](docs/results-video.md)）。
 
 ![分割比較（左原始、右 Ancuti 融合）](docs/screenshots/video-split.png)
@@ -18,8 +18,8 @@
 ```bash
 npm install          # 只有開發 / 測試需要；網站本身是純靜態檔
 npm run serve        # http://localhost:8080
-npm test             # 單元測試（核心運算、14 種方法、時間穩定化）
-npm run e2e -- <影片>  # 無頭 Chromium 端對端：播放、14 種方法、全部比較、7 個深度模型、匯出 MP4/PNG
+npm test             # 單元測試（核心運算、15 種方法、時間穩定化）
+npm run e2e -- <影片>  # 無頭 Chromium 端對端：播放、15 種方法、全部比較、7 個深度模型、Diverout_sim 關鍵幀、匯出 MP4/PNG
 node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評測（照片、合成場景）
 node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/video-report.mjs v.json > docs/results-video.md   # 影片
 ```
@@ -47,7 +47,7 @@ node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/
 
 ## 一、研究整理：網路上的論文與 GitHub 實作
 
-### 實作進 App 的 14 種方法
+### 實作進 App 的 15 種方法
 
 | # | 方法 | 類型 | 論文 | GitHub 參考實作 |
 |---|---|---|---|---|
@@ -65,6 +65,7 @@ node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/
 | 12 | Five A⁺ Network | 深度學習 | Jiang et al., *Five A⁺ Network: You Only Need 9K Parameters for Underwater Image Enhancement*, BMVC 2023 · [arXiv](https://arxiv.org/abs/2305.08824) | [Owen718/FiveAPlus-Network](https://github.com/Owen718/FiveAPlus-Network)；權重同上 |
 | 13 | WaterNet | 深度學習 | Li et al., *An Underwater Image Enhancement Benchmark Dataset and Beyond*（UIEB），IEEE TIP 2020 · [arXiv](https://arxiv.org/abs/1901.05495) | [Li-Chongyi/Water-Net_Code](https://github.com/Li-Chongyi/Water-Net_Code)；PyTorch 權重 [tnwei/waternet](https://github.com/tnwei/waternet)（MIT） |
 | 14 | UVE-Net（影片） | 深度學習 | Xie et al., *UVEB: A Large-scale Benchmark and Baseline Towards Real-World Underwater Video Enhancement*, CVPR 2024 · [arXiv](https://arxiv.org/abs/2404.14542) | [yzbouc/UVEB](https://github.com/yzbouc/UVEB)（MIT，含權重） |
+| 15 | Diverout_sim | 調色模擬 | DIVEROUT App 影片「AI 調色」的黑箱反推模型 · [`docs/diverout-model.md`](docs/diverout-model.md) | 命令列工具 [`tools/diverout_cc.py`](tools/diverout_cc.py)；App 版 [`diverout.js`](lib/methods/diverout.js) |
 
 ### 第二輪：再加入的 5 種方法（依評分挑選）
 
@@ -126,7 +127,7 @@ node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/
 
 ---
 
-## 二、14 種方法：原理與本實作
+## 二、15 種方法：原理與本實作
 
 每個方法分成兩步：`estimate()` 在 320 px 小圖上估計**全域量**（背景光、白平衡增益、拉伸範圍、散射係數…），
 `apply()` 在處理解析度上套用。這樣一來估計便宜、全域量也能做時間平滑。程式在 [`lib/methods/`](lib/methods)。
@@ -189,6 +190,18 @@ WASM 單執行緒每次推論：Five A⁺ 約 0.7 s、NU²-Net 約 1 s、UWCNN �
 UVEB 官方小模型（12 通道特徵、53 萬參數）：把中間格縮小 4 倍後產生動態卷積核，再套到各格的特徵上。
 匯出時把逐批次迴圈與 5 維 PixelShuffle 改寫成等價運算（與原始 PyTorch 輸出差 0），輸入長寬為 16 的倍數。
 
+### 15. Diverout_sim（DIVEROUT 調色模擬）— [`diverout.js`](lib/methods/diverout.js)
+重現 DIVEROUT App「高／超高／標準」的黑箱反推模型（完整說明見 [`docs/diverout-model.md`](docs/diverout-model.md)）：逐通道自動色階。
+每隔 T 秒（高 1 秒、超高 0.5 秒、標準 2 秒）取一個關鍵幀，算出 R、G、B 各自的黑點與白點；中間幀線性內插；
+紅色平均太低時先合成紅色 `R′ = w·R + (1−w)·(G − k·B)` 再拉伸。整張畫面同一組參數，沒有局部處理。
+- **影片要先看過整支片**：選這個方法時，App 會先用一個看不見的播放器跳到每個關鍵幀估計參數，之後的暫停預覽、
+  播放、匯出都用同一組關鍵幀內插（和 DIVEROUT 一樣）。播放時參數是全域 3×4 色彩矩陣，直接在 GPU 每格套用。
+- **參數**：模式（高／超高／標準）、參數組（real：實拍擬合，預設；synthetic：測試圖規則）；「還原強度」= 原工具的 `--strength`。
+- **與原工具一致**：同一批影格上，App 版與 [`tools/diverout_cc.py`](tools/diverout_cc.py) 輸出相差 ≤ 1 碼值（PSNR 73 dB，
+  關鍵幀位置相同）；照片 real 參數組逐像素相差 ≤ 1。
+- **命令列版**：`pip install numpy opencv-python`（另需 ffmpeg），`python3 tools/diverout_cc.py dive.mp4` → `dive_cc.mp4`（保留音軌），
+  也可處理照片與整個資料夾；4K 片建議加 `--max-height 1080`。
+
 ---
 
 ## 三、影片時間一致性 — [`lib/temporal.js`](lib/temporal.js)
@@ -216,6 +229,7 @@ UVEB 官方小模型（12 通道特徵、53 萬參數）：把中間格縮小 4 
 | **WaterNet** | 19.05 | 0.698 | 17.4 | 3.22 |
 | **UVE-Net** | 18.94 | 0.677 | 17.7 | 3.13 |
 | ULAP | 18.02 | 0.678 | 19.8 | 2.99 |
+| Diverout_sim | 17.70 | 0.695 | 20.7 | 2.95 |
 | IBLA | 17.61 | 0.645 | 20.8 | 2.65 |
 | UWCNN | 17.44 | 0.653 | 21.6 | 3.09 |
 | 色彩平衡＋融合 | 16.77 | 0.695 | 24.3 | **3.46** |
@@ -236,20 +250,22 @@ UVEB 官方小模型（12 通道特徵、53 萬參數）：把中間格縮小 4 
 | 2 | Five A⁺ | 19.96 | **0.618** | **10.69** | 628 |
 | 3 | UIEC²-Net | 19.79 | 0.616 | 10.72 | 5555 |
 | 4 | NU²-Net | 19.69 | 0.616 | 10.76 | 1277 |
-| 5 | **UVE-Net** | 18.75 | 0.591 | 11.22 | 314 |
-| 6 | RGHS | 18.30 | 0.547 | 12.25 | 44 |
-| 7 | FUnIE-GAN | 17.93 | 0.576 | 11.60 | 419 |
-| 8 | UWCNN | 17.80 | 0.575 | 11.50 | 879 |
-| 9 | MLLE | 17.56 | 0.511 | 15.95 | 127 |
+| 5 | **Diverout_sim** | 19.65 | 0.589 | 11.22 | **5** |
+| 6 | **UVE-Net** | 18.75 | 0.591 | 11.22 | 314 |
+| 7 | RGHS | 18.30 | 0.547 | 12.25 | 44 |
+| 8 | FUnIE-GAN | 17.93 | 0.576 | 11.60 | 419 |
+| 9 | UWCNN | 17.80 | 0.575 | 11.50 | 879 |
+| 10 | MLLE | 17.56 | 0.511 | 15.95 | 127 |
 | — | 未處理 | 16.84 | 0.575 | 11.08 | — |
-| 10 | 色彩平衡＋融合 | 16.24 | 0.578 | 11.59 | 104 |
-| 11 | Sea-thru（ULAP 深度） | 14.80 | 0.469 | 14.40 | 246 |
-| 12 | ULAP | 13.44 | 0.500 | 12.28 | 27 |
-| 13 | IBLA | 13.32 | 0.426 | 12.95 | 249 |
-| 14 | UDCP | 11.01 | 0.367 | 13.74 | 31 |
+| 11 | 色彩平衡＋融合 | 16.24 | 0.578 | 11.59 | 104 |
+| 12 | Sea-thru（ULAP 深度） | 14.80 | 0.469 | 14.40 | 246 |
+| 13 | ULAP | 13.44 | 0.500 | 12.28 | 27 |
+| 14 | IBLA | 13.32 | 0.426 | 12.95 | 249 |
+| 15 | UDCP | 11.01 | 0.367 | 13.74 | 31 |
 
 UVE-38K 的參考影片是從 12 種增強方法挑選、再做幀間一致化的結果；GIF 預覽為 256 色，分數適合方法間互相比較。
-沒了 EUVP 的主場優勢，FUnIE-GAN 掉到第 7；前 4 名都是 UIEB 訓練的模型，差距在 0.4 dB 內。
+Diverout_sim 以每 1 秒的關鍵幀＋線性內插處理（同 DIVEROUT「高」），只是整張畫面的色階拉伸，卻排到第 5、與 NU²-Net 只差 0.04 dB，
+而且每格只要 5 ms（深度模型的百分之一）。沒了 EUVP 的主場優勢，FUnIE-GAN 掉到第 8；前 4 名都是 UIEB 訓練的模型，差距在 0.4 dB 內。
 每格 ms 是 Node 單執行緒 CPU、320 px 全方法處理；App 播放時改用 GPU 套用局部係數，不受這個速度限制。
 
 **合成場景**（已知真值；水上場景經修正成像模型退化成藍水/綠水/混濁）——平均色差 ΔE（越低越好）：
@@ -267,6 +283,7 @@ UVE-38K 的參考影片是從 12 種增強方法挑選、再做幀間一致化�
 | FUnIE-GAN | 26.0 | 791 ms |
 | WaterNet | 27.6 | 5014 ms |
 | IBLA | 29.1 | 760 ms |
+| Diverout_sim | 29.1 | 148 ms |
 | Sea-thru（ULAP 深度） | 29.3 | 439 ms |
 | RGHS | 33.7 | 171 ms |
 | ULAP | 35.6 | 93 ms |
@@ -276,11 +293,14 @@ UVE-38K 的參考影片是從 12 種增強方法挑選、再做幀間一致化�
 （例：WaterNet 3.70 → 0.46、UWCNN 3.32 → 0.49、FUnIE-GAN 1.46 → 0.14），扭曲誤差也全部下降。
 例外是 RGHS（1.32 → 1.39）：它每幀的直方圖拉伸本來就會抵消輸入的曝光抖動，平滑參數反而保留了輸入本身的抖動。
 UVE-Net 是影片模型，逐幀閃爍本來就最低（0.55），穩定後 0.15。
+Diverout_sim 不用 App 的時間穩定化，而是 DIVEROUT 的關鍵幀內插：在這段「每幀 ±3% 曝光抖動」的合成片上，閃爍反而從逐幀的 0.62 變成 2.54——
+關鍵幀之間參數固定，輸入本身的抖動被色階拉伸放大（逐幀處理時則被每幀的拉伸抵消）。真實影片（UVE-38K）上它的亮度閃爍 0.71，與 RGHS 相當。
 
 **怎麼選**：
 - **畫質優先、照片或短片**：**WaterNet**（真實影片第 1）、**NU²-Net**（照片整體最均衡）或 **UIEC²-Net**——這三個每幀都要 1–5 秒（CPU）。
 - **手機上跑影片**：**Five A⁺**（0.9 MB、真實影片第 2、SSIM 與時間誤差最好）或 **UVE-Net**（最快的深度模型、閃爍最低）；傳統方法選 **1 融合**。
 - **綠水、色偏重的近景**：**2 MLLE** 或 **8 FUnIE-GAN**；**淺水晴天、想保留水的氛圍**：**5 RGHS**。
+- **想要 DIVEROUT 的樣子**：**15 Diverout_sim**（每格約 5 ms，手機也能即時播放，色彩只做全域拉伸、不動細節）。
 - **混濁、霧感重**：**7 IBLA** 或 **4 UDCP**（白平衡開）；**6 Sea-thru** 對有遠近層次的場景最「物理」，但依賴深度先驗。
 
 > 指標的限制：UIQM / UCIQE 會獎勵高對比、高飽和（UDCP 的 UCIQE 最高但色差最大），只能當參考；
@@ -295,9 +315,9 @@ index.html  style.css  app.js     介面（分割比較、播放、全部比較�
 worker.js                         背景執行緒：所有運算、ONNX 模型載入與本機快取
 sw.js  manifest.webmanifest       PWA（離線、安裝）
 lib/core.js                       影像基礎：縮放、方框/高斯/最小值濾波、引導濾波、金字塔、Lab
-lib/methods/*.js                  14 種方法（estimate / apply）；net.js = 深度模型共同外殼
+lib/methods/*.js                  15 種方法（estimate / apply）；net.js = 深度模型共同外殼；diverout.js = Diverout_sim
 lib/temporal.js                   時間一致性
-lib/pipeline.js                   單幀管線：估計 → 平滑 → 套用 → 去閃爍 → 強度
+lib/pipeline.js                   單幀管線：估計 → 平滑 → 套用 → 去閃爍 → 強度（或直接收關鍵幀內插好的參數）
 lib/metrics.js                    UIQM、UCIQE、色差、PSNR、SSIM
 lib/synth.js                      合成真值場景與影片（測試與「合成示範」）
 models/  vendor/                  7 個 ONNX 模型、onnxruntime-web、mediabunny（npm run vendor 更新）
@@ -305,6 +325,8 @@ scripts/export_uieb_onnx.py       UIEB 權重 → ONNX 的轉檔腳本（需 tor
 scripts/export_extra_onnx.py      WaterNet、UVE-Net 權重 → ONNX
 scripts/bench.mjs                 評測：合成場景、EUVP 照片、合成影片閃爍 → docs/results.md
 scripts/bench-video.mjs           評測：UVE-38K 成對影片（video-report.mjs → docs/results-video.md）
+tools/diverout_cc.py              Diverout_sim 命令列版（Python + numpy + OpenCV + ffmpeg）：影片、照片、資料夾
+docs/diverout-model.md            DIVEROUT 調色反推模型說明（參數、來源測試、準確度、限制）
 test/  scripts/                   單元測試、評測、端對端、靜態伺服器
 ```
 

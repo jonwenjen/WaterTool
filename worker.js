@@ -216,6 +216,12 @@ self.onmessage = async (e) => {
       lastFit = null;
       const { a, b } = fitCoeffs(src, out, true);
       postMessage({ type: 'fit', id: m.id, a: a.buffer, b: b.buffer, w: m.w, h: m.h }, [a.buffer, b.buffer]);
+    } else if (m.type === 'estimate') {
+      // 只估計全域參數（Diverout_sim 的關鍵幀）
+      const meth = byId[m.method];
+      const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
+      const g = await meth.estimate(img, { ...defaults(meth), ...(m.params || {}) }, ctx);
+      postMessage({ type: 'estimate', id: m.id, g });
     } else if (m.type === 'prefetch') {
       await prefetchAll();
     } else if (m.type === 'compare') {

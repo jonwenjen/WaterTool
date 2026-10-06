@@ -4,6 +4,7 @@ import { INFO } from './lib/methods/info.js';
 import { syntheticClip } from './lib/synth.js';
 import * as C from './lib/core.js';
 import { GLPlayer } from './player-gl.js';
+import { diverMatrix, interpKeys, keyframeTimes, keyframeIndices } from './lib/methods/diverout.js';
 
 const $ = (id) => document.getElementById(id);
 const fmtTime = (s) => (Number.isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00');
@@ -136,11 +137,97 @@ function readUi() {
     mix: +$('mix').value, post: +$('post').value, prevRes: $('prevRes').value, outRes: $('outRes').value,
   };
 }
-function buildOpts(dt) {
+function buildOpts(dt, t = current()) {
   const u = readUi();
   const o = { method: state.method, params: state.params[state.method], mix: u.mix, post: u.post };
   if (dt !== null && u.tOn) o.video = { dt: dt || 1 / 30, tau: u.tTau, deflicker: u.tDef, every: u.tEvery };
+  const g = keyG(t);
+  if (g) { o.g = g; delete o.video; } // Diverout_sim：用整支片的關鍵幀內插，不做逐幀估計與平滑
   return o;
+}
+
+// ---------------- Diverout_sim：整支片的關鍵幀 ----------------
+// 和 DIVEROUT 一樣先看過整支片：每隔 T 秒取一個關鍵幀估計色階，中間幀線性內插（預覽、播放、匯出都用同一組）。
+const KEY_EDGE = 1280;
+let track = null; // { src, pkey, keys: [{ t, g }], ready, promise }
+let trackGen = 0;
+const usesKeys = () => !!byId[state.method].keyframes && !!state.src && state.src.kind !== 'image';
+const paramKey = () => state.method + JSON.stringify(state.params[state.method]);
+function keyG(t) {
+  if (!usesKeys() || !track || !track.ready || track.src !== state.src || track.pkey !== paramKey()) return null;
+  return interpKeys(track.keys, t);
+}
+function ensureTrack() {
+  if (!usesKeys()) return Promise.resolve();
+  if (track && track.src === state.src && track.pkey === paramKey()) return track.promise;
+  const gen = ++trackGen;
+  const t = { src: state.src, pkey: paramKey(), keys: [], ready: false };
+  track = t;
+  t.promise = buildTrack(t, () => gen !== trackGen).then(() => {
+    if (gen !== trackGen) return;
+    t.ready = true;
+    if (byId[state.method].keyframes) $('modelState').hidden = true;
+    if (!state.playing) processFrame(null);
+    else if (glActive()) $('stTime').textContent = `播放：GPU 即時套用 · ${t.keys.length} 個關鍵幀線性內插`;
+  }).catch((err) => {
+    if (gen !== trackGen) return;
+    track = null;
+    showError('關鍵幀分析失敗：' + err.message);
+  });
+  return t.promise;
+}
+async function buildTrack(t, stale) {
+  const { method } = state, params = state.params[method], src = t.src;
+  const note = (i, n) => { if (state.method === method) showModelNote(`${byId[method].short}：分析整支片的關鍵幀 ${i}/${n}…`); };
+  const estimateAt = async (draw, time) => {
+    const [w, h] = C.fitSize(src.w, src.h, KEY_EDGE);
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    draw(x, w, h);
+    const data = x.getImageData(0, 0, w, h);
+    const r = await call({ type: 'estimate', method, params, rgba: data.data.buffer, w, h }, [data.data.buffer]);
+    t.keys.push({ t: time, g: r.g });
+  };
+  if (src.kind === 'demo') {
+    const n = demo.frames.length, idx = keyframeIndices(n, demo.fps, params.interval);
+    const tmp = document.createElement('canvas');
+    tmp.width = src.w;
+    tmp.height = src.h;
+    for (const [j, i] of idx.entries()) {
+      if (stale()) return;
+      note(j + 1, idx.length);
+      tmp.getContext('2d').putImageData(demo.frames[i], 0, 0);
+      await estimateAt((x, w, h) => x.drawImage(tmp, 0, 0, w, h), i / demo.fps);
+    }
+    return;
+  }
+  // 影片：另開一個看不見的 <video> 逐一跳到關鍵幀（不影響正在看的畫面）
+  const kv = document.createElement('video');
+  kv.muted = true;
+  kv.playsInline = true;
+  kv.preload = 'auto';
+  kv.src = video.src;
+  try {
+    await new Promise((ok, bad) => { kv.onloadeddata = ok; kv.onerror = () => bad(new Error('無法讀取影片')); });
+    const D = kv.duration || video.duration || 0, times = keyframeTimes(D, params.interval);
+    for (const [j, time] of times.entries()) {
+      if (stale()) return;
+      note(j + 1, times.length);
+      const seekTo = Math.min(time, Math.max(0, D - 0.04)); // 最後一個關鍵幀 = 最後一幀
+      await new Promise((ok) => {
+        const done = () => { clearTimeout(timer); ok(); };
+        const timer = setTimeout(done, 3000);
+        kv.addEventListener('seeked', done, { once: true });
+        kv.currentTime = seekTo;
+      });
+      await estimateAt((x, w, h) => x.drawImage(kv, 0, 0, w, h), time);
+    }
+  } finally {
+    kv.removeAttribute('src');
+    kv.load();
+  }
 }
 
 let busy = false, again = undefined; // again：處理中又收到的請求（其 dt）
@@ -227,7 +314,7 @@ function startGL() {
   glview.height = view.height = h;
   g.resetCoeffs();
   const seeded = hasResult && resFresh && orig.width > 0 ? seedFromPaused() : Promise.resolve();
-  $('stTime').textContent = '播放：GPU 即時套用 · 色彩計算中…';
+  $('stTime').textContent = matrixG() ? `播放：GPU 即時套用 · ${track.keys.length} 個關鍵幀線性內插` : '播放：GPU 即時套用 · 色彩計算中…';
   glview.hidden = false;
   view.hidden = true;
   renderGL();
@@ -252,10 +339,16 @@ async function seedFromPaused() {
     if (glActive()) gl.setCoeffs(new Float32Array(r.a), new Float32Array(r.b), r.w, r.h);
   } catch { /* 沒有也沒關係，等第一次更新 */ }
 }
-function renderGL() {
+/** 播放時可以直接用全域色彩矩陣的情況（Diverout_sim 關鍵幀已備妥、沒開共用自動色階） */
+function matrixG(t = current()) {
+  return +$('post').value === 0 ? keyG(t) : null;
+}
+function renderGL(t) {
   if (!glActive()) return;
   state.glFrames = (state.glFrames || 0) + 1;
-  gl.draw(playSource(), { split: state.split, mode: state.view === 'compare' ? 'split' : state.view });
+  const g = matrixG(t ?? current());
+  gl.setMatrix(g ? diverMatrix(g) : null);
+  gl.draw(playSource(), { split: state.split, mode: state.view === 'compare' ? 'split' : state.view, amount: g ? +$('mix').value : 1 });
 }
 function stopGL() {
   if (!glActive()) return;
@@ -270,7 +363,7 @@ async function fitLoop() {
   if (fitRunning) return;
   fitRunning = true;
   try {
-    while (state.playing && glActive()) {
+    while (state.playing && glActive() && !matrixG()) {
       const [w, h] = C.fitSize(state.src.w, state.src.h, FIT_EDGE);
       if (fitCanvas.width !== w || fitCanvas.height !== h) { fitCanvas.width = w; fitCanvas.height = h; }
       fctx.drawImage(playSource(), 0, 0, w, h);
@@ -280,7 +373,7 @@ async function fitLoop() {
       const data = fctx.getImageData(0, 0, w, h);
       const t0 = performance.now();
       const r = await call({ type: 'fit', rgba: data.data.buffer, w, h, opts: buildOpts(dt) }, [data.data.buffer]);
-      if (!state.playing || !glActive()) break;
+      if (!state.playing || !glActive() || matrixG()) break;
       gl.setCoeffs(new Float32Array(r.a), new Float32Array(r.b), r.w, r.h);
       state.fits = (state.fits || 0) + 1;
       if (state.src.kind === 'demo') renderGL();
@@ -298,7 +391,7 @@ async function fitLoop() {
 let lastMediaTime = null, demoTimer = 0;
 function onVideoFrame(_now, meta) {
   if (!state.playing) return;
-  if (glActive()) renderGL();
+  if (glActive()) renderGL(meta ? meta.mediaTime : undefined);
   else if (!busy) {
     const t = meta ? meta.mediaTime : video.currentTime;
     const dt = lastMediaTime === null ? 0 : Math.max(0, Math.min(0.5, t - lastMediaTime));
@@ -483,6 +576,7 @@ function setSource(src) {
   resetTemporal();
   updateTime();
   processFrame(null);
+  ensureTrack();
   if (state.view === 'compare') runCompare();
 }
 
@@ -619,6 +713,7 @@ function selectMethod(id) {
   save();
   resetTemporal();
   processFrame(null);
+  ensureTrack();
 }
 function setRange(id, v) {
   $(id).value = String(v);
@@ -630,8 +725,14 @@ function renderParams() {
   for (const p of m.params) {
     const wrap = document.createElement('div');
     wrap.className = 'ctl';
-    const isAuto = p.auto && vals[p.key] < 0;
     const id = `p_${p.key}`;
+    if (p.options) {
+      wrap.innerHTML = `<label for="${id}">${p.label}</label><select id="${id}">${p.options.map(([v, t]) => `<option value="${v}"${v === vals[p.key] ? ' selected' : ''}>${t}</option>`).join('')}</select>`;
+      wrap.querySelector('select').addEventListener('change', (e) => { vals[p.key] = +e.target.value; onParamChange(); });
+      box.append(wrap);
+      continue;
+    }
+    const isAuto = p.auto && vals[p.key] < 0;
     wrap.innerHTML = `<label for="${id}">${p.label} <output>${isAuto ? '自動' : fmt(vals[p.key], p.step)}</output></label>
       <input type="range" id="${id}" min="${p.min}" max="${p.max}" step="${p.step}" value="${isAuto ? (p.min + p.max) / 2 : vals[p.key]}" ${isAuto ? 'disabled' : ''}>
       ${p.auto ? `<label class="auto"><input type="checkbox" ${isAuto ? 'checked' : ''}> 自動判斷</label>` : ''}`;
@@ -650,7 +751,13 @@ function renderParams() {
     });
     box.append(wrap);
   }
-  $('modelState').hidden = !m.needsModel || state.models.has(m.model.file);
+  if (m.keyframes) {
+    const n = document.createElement('p');
+    n.className = 'hint';
+    n.textContent = '影片會先分析整支片：每隔所選秒數取一個關鍵幀，中間線性內插（同 DIVEROUT）。下方「影片時間一致性」對這個方法不作用。';
+    box.append(n);
+  }
+  $('modelState').hidden = !(m.needsModel && !state.models.has(m.model.file)) && !(m.keyframes && usesKeys() && !(track && track.ready && track.pkey === paramKey()));
 }
 const fmt = (v, step) => (step >= 1 ? String(Math.round(v)) : (+v).toFixed(step < 0.1 ? 2 : 1));
 let paramTimer = 0;
@@ -659,6 +766,7 @@ function onParamChange() {
   clearTimeout(paramTimer);
   paramTimer = setTimeout(() => {
     resetTemporal();
+    ensureTrack();
     if (!state.playing) processFrame(null);
     if (state.view === 'compare') runCompare();
   }, 60);
@@ -764,6 +872,11 @@ $('export').onclick = async () => {
   const t0 = performance.now();
   try {
     worker.postMessage({ type: 'reset', slot: 'export' });
+    if (usesKeys()) {
+      $('exportNote').textContent = '分析關鍵幀…';
+      await ensureTrack();
+      if (!keyG(0)) throw new Error('關鍵幀分析未完成');
+    }
     if (state.src.kind === 'image') await exportImage();
     else if (state.src.kind === 'video') await exportVideo();
     else await exportDemo();
@@ -780,10 +893,10 @@ $('export').onclick = async () => {
 };
 $('cancel').onclick = () => cancelExport && cancelExport();
 
-async function processExport(ctx2d, w, h, dt) {
+async function processExport(ctx2d, w, h, dt, t = 0) {
   const data = ctx2d.getImageData(0, 0, w, h);
   const u = readUi();
-  const opts = buildOpts(dt);
+  const opts = buildOpts(dt, t);
   if (dt !== null && !u.tOn) delete opts.video;
   const r = await call({ type: 'process', slot: 'export', rgba: data.data.buffer, w, h, opts }, [data.data.buffer]);
   ctx2d.putImageData(new ImageData(new Uint8ClampedArray(r.rgba), w, h), 0, 0);
@@ -835,7 +948,7 @@ async function exportVideo() {
         sample.draw(x, 0, 0, ow, oh);
         const dt = prevTs === null ? 0 : sample.timestamp - prevTs;
         prevTs = sample.timestamp;
-        await processExport(x, ow, oh, dt);
+        await processExport(x, ow, oh, dt, sample.timestamp);
         return c;
       },
     },
@@ -872,7 +985,7 @@ async function exportDemo() {
       throw Object.assign(new Error('canceled'), { name: 'ConversionCanceledError' });
     }
     x.putImageData(demo.frames[i], 0, 0);
-    await processExport(x, w, h, i ? 1 / demo.fps : 0);
+    await processExport(x, w, h, i ? 1 / demo.fps : 0, i / demo.fps);
     await src.add(i / demo.fps, 1 / demo.fps);
     $('prog').value = (i + 1) / demo.frames.length;
   }
@@ -960,4 +1073,7 @@ renderMethods();
 renderParams();
 renderAbout();
 placeOverlay();
-window.__watertool = { state, call, renderGL }; // 給自動化測試用
+window.__watertool = { // 給自動化測試用
+  state, call, renderGL,
+  keyInfo: () => ({ ready: !!(track && track.ready && keyG(0)), keys: track ? track.keys.length : 0, matrix: glActive() && !!matrixG() }),
+};

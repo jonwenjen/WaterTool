@@ -16,11 +16,15 @@ precision highp float;
 uniform sampler2D src, coefA, coefB;
 uniform float split, amount;
 uniform int mode; // 0 分割、1 結果、2 原始
+uniform bool useMat; // 全域 3×4 色彩矩陣（Diverout_sim）取代局部係數
+uniform vec4 m0, m1, m2;
 in vec2 uv;
 out vec4 o;
 void main() {
   vec3 s = texture(src, uv).rgb;
-  vec3 r = clamp(texture(coefA, uv).rgb * s + texture(coefB, uv).rgb, 0.0, 1.0);
+  vec4 s1 = vec4(s, 1.0);
+  vec3 r = useMat ? clamp(vec3(dot(m0, s1), dot(m1, s1), dot(m2, s1)), 0.0, 1.0)
+                  : clamp(texture(coefA, uv).rgb * s + texture(coefB, uv).rgb, 0.0, 1.0);
   r = mix(s, r, amount);
   bool showResult = mode == 1 || (mode == 0 && uv.x >= split);
   o = vec4(showResult ? r : s, 1.0);
@@ -69,6 +73,8 @@ export class GLPlayer {
     this.uSplit = gl.getUniformLocation(prog, 'split');
     this.uMode = gl.getUniformLocation(prog, 'mode');
     this.uAmount = gl.getUniformLocation(prog, 'amount');
+    this.uUseMat = gl.getUniformLocation(prog, 'useMat');
+    this.uM = ['m0', 'm1', 'm2'].map((k) => gl.getUniformLocation(prog, k));
     this.resetCoeffs();
   }
 
@@ -87,6 +93,13 @@ export class GLPlayer {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, cw, ch, 0, gl.RGBA, gl.FLOAT, data);
     }
     this.hasCoeffs = true;
+  }
+
+  /** rows：3 列 [r, g, b, 常數]（[0,1] 色值）；null = 改回局部係數 */
+  setMatrix(rows) {
+    const gl = this.gl;
+    gl.uniform1i(this.uUseMat, rows ? 1 : 0);
+    if (rows) rows.forEach((r, i) => gl.uniform4f(this.uM[i], r[0], r[1], r[2], r[3]));
   }
 
   /** source：<video> 或 <canvas>；opts：{ split, mode: 'split'|'result'|'original', amount } */

@@ -69,3 +69,25 @@ test('blend 遞迴內插數字 / 陣列 / TypedArray', () => {
   const r = blend({ a: 0, b: [0, 10], c: new Float32Array([2, 4]) }, { a: 1, b: [1, 20], c: new Float32Array([4, 8]) }, 0.5);
   assert.deepEqual([r.a, r.b, [...r.c]], [0.5, [0.5, 15], [3, 6]]);
 });
+
+test('Diverout_sim：關鍵幀位置、內插、色彩矩陣與紅色合成', async () => {
+  const { keyframeIndices, keyframeTimes, interpKeys, diverEstimate, diverApply, diverMatrix } = await import('../lib/methods/diverout.js');
+  // 與 diverout_cc.py 相同：N = ceil(片長 / T)，N+1 個平均分布（最後一個 = 最後一幀）
+  assert.deepEqual(keyframeIndices(90, 30, 1), [0, 30, 60, 89]);
+  assert.deepEqual(keyframeIndices(90, 30, 2), [0, 45, 89]);
+  assert.equal(keyframeIndices(1306, 60, 1).length, 23);
+  assert.equal(keyframeTimes(3.02, 1).length, 4); // 瀏覽器片長含音軌的幾十毫秒
+  const A = { lo: [0, 10, 20], hi: [200, 210, 220], w: 1, k: 1 }, B = { lo: [10, 20, 30], hi: [210, 230, 240], w: 0.5, k: 0.5 };
+  const mid = interpKeys([{ t: 0, g: A }, { t: 1, g: B }], 0.5);
+  assert.deepEqual(mid.lo, [5, 15, 25]);
+  assert.equal(mid.w, 0.75);
+  // 深藍綠水（紅色幾乎沒有）→ 紅色由綠、藍合成，輸出紅色明顯回來
+  const deep = C.create(64, 64);
+  for (let i = 0; i < 64 * 64; i++) { deep.c[0][i] = 0.01; deep.c[1][i] = 0.3 + 0.4 * (i % 64) / 64; deep.c[2][i] = 0.5 + 0.2 * Math.floor(i / 64) / 64; }
+  const g = diverEstimate(deep);
+  assert.ok(Math.abs(g.w - 0.249) < 0.01, `紅色平均 3 → w ≈ 0.25（表格內插），實得 ${g.w}`);
+  const out = diverApply(deep, g), M = diverMatrix(g);
+  assert.ok(C.mean(out.c[0]) > 0.2, '紅色應被合成回來');
+  const i = 1234, v = M[0][0] * deep.c[0][i] + M[0][1] * deep.c[1][i] + M[0][2] * deep.c[2][i] + M[0][3];
+  assert.ok(Math.abs(C.clamp01(v) - out.c[0][i]) < 1e-6, 'GPU 矩陣與 CPU 套用一致');
+});

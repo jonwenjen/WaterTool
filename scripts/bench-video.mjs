@@ -13,6 +13,7 @@ import { METHODS, defaults } from '../lib/methods/index.js';
 import { psnr, ssim } from '../lib/metrics.js';
 import { Processor } from '../lib/pipeline.js';
 import { nodeRunNet } from './node-net.mjs';
+import { keysFromFrames, interpKeys } from '../lib/methods/diverout.js';
 
 const args = process.argv.slice(2);
 const dir = args[0];
@@ -50,10 +51,14 @@ for (const id of methods) {
   for (const clip of data) {
     const proc = new Processor(ctx), outs = [];
     const t0 = performance.now();
-    for (const f of clip.raw) {
+    const m = METHODS.find((x) => x.id === id);
+    // 關鍵幀方法（Diverout_sim）：先看過整段，關鍵幀＋線性內插（同 App 與 DIVEROUT）
+    const keys = m && m.keyframes ? keysFromFrames(clip.raw, clip.fps, defaults(m)) : null;
+    for (const [i, f] of clip.raw.entries()) {
       if (id === 'input') { outs.push(f); continue; }
-      const m = METHODS.find((x) => x.id === id);
-      outs.push((await proc.run(f, { method: id, params: defaults(m), video: { dt: 1 / clip.fps, tau: 0.5, deflicker: 0.7, every: 1 } })).out);
+      const opts = keys ? { method: id, params: defaults(m), g: interpKeys(keys, i / clip.fps) }
+        : { method: id, params: defaults(m), video: { dt: 1 / clip.fps, tau: 0.5, deflicker: 0.7, every: 1 } };
+      outs.push((await proc.run(f, opts)).out);
     }
     const ms = (performance.now() - t0) / clip.raw.length;
     let p = 0, s = 0, et = 0, fl = 0;
