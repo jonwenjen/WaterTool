@@ -87,7 +87,8 @@ function loadRuntime(onBytes) {
     const base = new URL('./', self.location.href);
     const ort = await importRuntime(new URL('vendor/ort/ort.wasm.bundle.min.mjs', base).href);
     const wasm = await cachedDownload(new URL('vendor/ort/ort-wasm-simd-threaded.wasm', base).href, onBytes);
-    ort.env.wasm.numThreads = 1; // 多執行緒需要 COOP/COEP 標頭，GitHub Pages 沒有
+    // 多執行緒需要跨來源隔離（COOP/COEP 標頭）：GitHub Pages 不能設標頭，由 sw.js 補上；沒有就單執行緒
+    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
     ort.env.wasm.wasmBinary = wasm;
     return ort;
   })();
@@ -219,6 +220,7 @@ self.onmessage = async (e) => {
     } else if (m.type === 'estimate') {
       // 只估計全域參數（Diverout_sim 的關鍵幀）
       const meth = byId[m.method];
+      await ensureModel(m.method);
       const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
       const g = await meth.estimate(img, { ...defaults(meth), ...(m.params || {}) }, ctx);
       postMessage({ type: 'estimate', id: m.id, g });

@@ -13,7 +13,8 @@ import { METHODS, defaults } from '../lib/methods/index.js';
 import { psnr, ssim } from '../lib/metrics.js';
 import { Processor } from '../lib/pipeline.js';
 import { nodeRunNet } from './node-net.mjs';
-import { keysFromFrames, interpKeys } from '../lib/methods/diverout.js';
+import { keysFromFrames } from '../lib/methods/diverout.js';
+import { keyframeIndices, interpKeys } from '../lib/keyframes.js';
 
 const args = process.argv.slice(2);
 const dir = args[0];
@@ -21,6 +22,7 @@ const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] :
 const N = +opt('--frames', 48);
 const only = opt('--methods', '');
 const out = opt('--out', '');
+const KEYS = +opt('--keys', 0); // >0：深度模型只在每 KEYS 秒的關鍵幀跑網路，中間內插（App 的快速匯出）
 const methods = ['input', ...METHODS.map((m) => m.id)].filter((id) => !only || only.split(',').includes(id));
 
 function decode(file) {
@@ -53,7 +55,11 @@ for (const id of methods) {
     const t0 = performance.now();
     const m = METHODS.find((x) => x.id === id);
     // 關鍵幀方法（Diverout_sim）：先看過整段，關鍵幀＋線性內插（同 App 與 DIVEROUT）
-    const keys = m && m.keyframes ? keysFromFrames(clip.raw, clip.fps, defaults(m)) : null;
+    let keys = m && m.keyframes ? keysFromFrames(clip.raw, clip.fps, defaults(m)) : null;
+    if (m && m.needsModel && KEYS > 0) {
+      keys = [];
+      for (const i of keyframeIndices(clip.raw.length, clip.fps, KEYS)) keys.push({ t: i / clip.fps, g: await m.estimate(clip.raw[i], defaults(m), ctx) });
+    }
     for (const [i, f] of clip.raw.entries()) {
       if (id === 'input') { outs.push(f); continue; }
       const opts = keys ? { method: id, params: defaults(m), g: interpKeys(keys, i / clip.fps) }

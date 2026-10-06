@@ -12,7 +12,10 @@ export function serve(port = 8080) {
     try {
       if ((await stat(f)).isDirectory()) f = join(f, 'index.html');
       const body = await readFile(f);
-      res.writeHead(200, { 'content-type': TYPES[extname(f)] || 'application/octet-stream', 'content-length': body.length });
+      // 與 sw.js 加的標頭相同：跨來源隔離 → SharedArrayBuffer → ONNX 多執行緒
+      // （COI=0：模擬 GitHub Pages 沒有這兩個標頭，由 sw.js 補上）
+      const coi = process.env.COI === '0' ? {} : { 'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp' };
+      res.writeHead(200, { 'content-type': TYPES[extname(f)] || 'application/octet-stream', 'content-length': body.length, ...coi });
       res.end(body);
     } catch {
       res.writeHead(404).end('not found');

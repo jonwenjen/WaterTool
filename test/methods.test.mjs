@@ -91,3 +91,17 @@ test('Diverout_sim：關鍵幀位置、內插、色彩矩陣與紅色合成', as
   const i = 1234, v = M[0][0] * deep.c[0][i] + M[0][1] * deep.c[1][i] + M[0][2] * deep.c[2][i] + M[0][3];
   assert.ok(Math.abs(C.clamp01(v) - out.c[0][i]) < 1e-6, 'GPU 矩陣與 CPU 套用一致');
 });
+
+test('關鍵幀內插：數字、陣列、Float32Array、物件都逐欄位線性內插', async () => {
+  const { lerpG, interpKeys } = await import('../lib/keyframes.js');
+  const A = { nw: 2, nh: 1, a: [Float32Array.of(0, 2)], b: [Float32Array.of(1, 1)] };
+  const B = { nw: 2, nh: 1, a: [Float32Array.of(2, 4)], b: [Float32Array.of(3, 1)] };
+  const m = lerpG(A, B, 0.25);
+  assert.equal(m.nw, 2);
+  assert.deepEqual([...m.a[0]], [0.5, 2.5]);
+  assert.deepEqual([...m.b[0]], [1.5, 1]);
+  const keys = [{ t: 0, g: A }, { t: 0.5, g: B }];
+  assert.deepEqual([...interpKeys(keys, 0.25).a[0]], [1, 3]);
+  assert.equal(interpKeys(keys, -1), A);
+  assert.equal(interpKeys(keys, 9), B);
+});

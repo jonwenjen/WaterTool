@@ -94,6 +94,8 @@ try {
     await waitIdle();
     await shot({ path: join(OUT, 'video-split.png') });
     ok(true, '真實影片載入、播放、還原');
+    await page.locator('.method').nth(11).click(); // Five A⁺：深度模型的快速匯出
+    await waitIdle();
     await page.selectOption('#outRes', '720');
     const [dl2] = await Promise.all([page.waitForEvent('download', { timeout: 600000 }), page.click('#export')]);
     const vOut = join(TMP, 'video-export.mp4');
@@ -101,6 +103,8 @@ try {
     const src = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', VIDEO]).toString().trim();
     const dst = execFileSync('ffprobe', ['-v', 'error', '-count_frames', '-show_entries', 'stream=codec_type,codec_name,width,height,nb_read_frames', '-of', 'compact', vOut]).toString().trim();
     ok(dst.includes(`nb_read_frames=${src}`), `影片匯出 MP4 幀數與原片相同（${src}）：${dst.replace(/\n/g, ' | ')}`);
+    const le = await page.evaluate(() => window.__watertool.state.lastExport);
+    ok(le && le.fast && le.frames === +src, `深度模型快速匯出：${le && le.keys} 個關鍵幀跑網路、${le && le.frames} 格由 GPU 套用`);
 
     // Diverout_sim：先分析整支片的關鍵幀 → 暫停預覽、GPU 色彩矩陣播放、匯出都用關鍵幀內插
     await page.locator('.method').nth(14).click();

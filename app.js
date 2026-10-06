@@ -4,7 +4,8 @@ import { INFO } from './lib/methods/info.js';
 import { syntheticClip } from './lib/synth.js';
 import * as C from './lib/core.js';
 import { GLPlayer } from './player-gl.js';
-import { diverMatrix, interpKeys, keyframeTimes, keyframeIndices } from './lib/methods/diverout.js';
+import { diverMatrix } from './lib/methods/diverout.js';
+import { interpKeys, keyframeTimes, keyframeIndices } from './lib/keyframes.js';
 
 const $ = (id) => document.getElementById(id);
 const fmtTime = (s) => (Number.isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00');
@@ -134,7 +135,7 @@ function grab() {
 function readUi() {
   return {
     tOn: $('tOn').checked, tTau: +$('tTau').value, tDef: +$('tDef').value, tEvery: +$('tEvery').value,
-    mix: +$('mix').value, post: +$('post').value, prevRes: $('prevRes').value, outRes: $('outRes').value,
+    mix: +$('mix').value, post: +$('post').value, prevRes: $('prevRes').value, outRes: $('outRes').value, netExp: $('netExp').value,
   };
 }
 function buildOpts(dt, t = current()) {
@@ -177,10 +178,19 @@ function ensureTrack() {
   return t.promise;
 }
 async function buildTrack(t, stale) {
-  const { method } = state, params = state.params[method], src = t.src;
-  const note = (i, n) => { if (state.method === method) showModelNote(`${byId[method].short}：分析整支片的關鍵幀 ${i}/${n}…`); };
+  const { method } = state, params = state.params[method];
+  t.keys = await collectKeys(t.src, method, params, params.interval, KEY_EDGE, stale,
+    (i, n) => { if (state.method === method) showModelNote(`${byId[method].short}：分析整支片的關鍵幀 ${i}/${n}…`); });
+}
+
+/**
+ * 整支片每隔 interval 秒取一個關鍵幀（長邊 edge），由背景執行緒估計參數 → [{ t, g }]。
+ * 影片另開一個看不見的 <video> 逐一跳過去（不影響正在看的畫面）。stale() 為真時中止。
+ */
+async function collectKeys(src, method, params, interval, edge, stale, note) {
+  const keys = [];
   const estimateAt = async (draw, time) => {
-    const [w, h] = C.fitSize(src.w, src.h, KEY_EDGE);
+    const [w, h] = C.fitSize(src.w, src.h, edge);
     const c = document.createElement('canvas');
     c.width = w;
     c.height = h;
@@ -188,22 +198,21 @@ async function buildTrack(t, stale) {
     draw(x, w, h);
     const data = x.getImageData(0, 0, w, h);
     const r = await call({ type: 'estimate', method, params, rgba: data.data.buffer, w, h }, [data.data.buffer]);
-    t.keys.push({ t: time, g: r.g });
+    keys.push({ t: time, g: r.g });
   };
   if (src.kind === 'demo') {
-    const n = demo.frames.length, idx = keyframeIndices(n, demo.fps, params.interval);
+    const n = demo.frames.length, idx = keyframeIndices(n, demo.fps, interval);
     const tmp = document.createElement('canvas');
     tmp.width = src.w;
     tmp.height = src.h;
     for (const [j, i] of idx.entries()) {
-      if (stale()) return;
+      if (stale()) return keys;
       note(j + 1, idx.length);
       tmp.getContext('2d').putImageData(demo.frames[i], 0, 0);
       await estimateAt((x, w, h) => x.drawImage(tmp, 0, 0, w, h), i / demo.fps);
     }
-    return;
+    return keys;
   }
-  // 影片：另開一個看不見的 <video> 逐一跳到關鍵幀（不影響正在看的畫面）
   const kv = document.createElement('video');
   kv.muted = true;
   kv.playsInline = true;
@@ -211,9 +220,9 @@ async function buildTrack(t, stale) {
   kv.src = video.src;
   try {
     await new Promise((ok, bad) => { kv.onloadeddata = ok; kv.onerror = () => bad(new Error('無法讀取影片')); });
-    const D = kv.duration || video.duration || 0, times = keyframeTimes(D, params.interval);
+    const D = kv.duration || video.duration || 0, times = keyframeTimes(D, interval);
     for (const [j, time] of times.entries()) {
-      if (stale()) return;
+      if (stale()) return keys;
       note(j + 1, times.length);
       const seekTo = Math.min(time, Math.max(0, D - 0.04)); // 最後一個關鍵幀 = 最後一幀
       await new Promise((ok) => {
@@ -228,6 +237,7 @@ async function buildTrack(t, stale) {
     kv.removeAttribute('src');
     kv.load();
   }
+  return keys;
 }
 
 let busy = false, again = undefined; // again：處理中又收到的請求（其 dt）
@@ -832,7 +842,7 @@ function bindRange(id, fmtFn) {
 const ui = saved.ui || {};
 if (ui.tOn !== undefined) $('tOn').checked = ui.tOn;
 for (const k of ['tTau', 'tDef', 'tEvery', 'mix', 'post']) if (ui[k] !== undefined) $(k).value = String(ui[k]);
-for (const k of ['prevRes', 'outRes']) if (ui[k] !== undefined) $(k).value = ui[k];
+for (const k of ['prevRes', 'outRes', 'netExp']) if (ui[k] !== undefined) $(k).value = ui[k];
 bindRange('tTau', (v) => (v === 0 ? '關' : `${v.toFixed(2)} 秒`));
 bindRange('tDef', (v) => (v === 0 ? '關' : `${Math.round(v * 100)}%`));
 bindRange('tEvery', (v) => `${v}`);
@@ -841,6 +851,7 @@ bindRange('post', (v) => (v === 0 ? '關' : `${Math.round(v * 100)}%`));
 $('tOn').addEventListener('change', onParamChange);
 $('prevRes').addEventListener('change', () => { save(); resetTemporal(); processFrame(null); });
 $('outRes').addEventListener('change', save);
+$('netExp').addEventListener('change', save);
 $('measure').onclick = measure;
 
 // ---------------- 匯出 ----------------
@@ -878,7 +889,7 @@ $('export').onclick = async () => {
       if (!keyG(0)) throw new Error('關鍵幀分析未完成');
     }
     if (state.src.kind === 'image') await exportImage();
-    else if (state.src.kind === 'video') await exportVideo();
+    else if (state.src.kind === 'video') await (fastNetExport() ? exportVideoFast() : exportVideo());
     else await exportDemo();
     $('exportNote').textContent = `完成，用時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒。`;
   } catch (err) {
@@ -960,6 +971,66 @@ async function exportVideo() {
   };
   cancelExport = () => conv.cancel();
   await conv.execute();
+  download(new Blob([output.target.buffer], { type: 'video/mp4' }), baseName() + '.mp4');
+}
+
+// ---- 深度模型的快速影片匯出 ----
+// 深度模型的輸出本來就是「局部仿射色彩轉換」係數圖（net.js）。先在整支片每隔 0.5 / 1 秒的關鍵幀跑網路，
+// 匯出每一格時把前後關鍵幀的係數線性內插，在 GPU 上套到原解析度 —— 網路次數少 10 倍以上，每格只剩 GPU 繪製與編碼。
+function fastNetExport() {
+  const m = byId[state.method];
+  return !!m.needsModel && state.src.kind === 'video' && +$('netExp').value > 0 && +$('post').value === 0
+    && typeof OffscreenCanvas !== 'undefined' && glPlayer() !== null;
+}
+async function exportVideoFast() {
+  if (!('VideoEncoder' in window)) throw new Error('此瀏覽器不支援 WebCodecs 影片編碼（請用新版 Chrome / Edge / Safari 17+）');
+  const method = state.method, m = byId[method], params = { ...state.params[method] }, interval = +$('netExp').value;
+  let canceled = false;
+  cancelExport = () => { canceled = true; };
+  const t0 = performance.now();
+  const keys = await collectKeys(state.src, method, params, interval, 640, () => canceled, (i, n) => {
+    $('prog').value = (i - 1) / n * 0.5;
+    $('exportNote').textContent = `${m.short}：關鍵幀 ${i}/${n}（每 ${interval} 秒跑一次網路）`;
+  });
+  if (canceled) throw Object.assign(new Error('canceled'), { name: 'ConversionCanceledError' });
+  const tKeys = (performance.now() - t0) / 1000;
+  const MB = await loadMediabunny();
+  const { w, h } = state.src;
+  const [ow, oh] = outSize(w, h);
+  const input = new MB.Input({ source: new MB.BlobSource(state.src.file), formats: MB.ALL_FORMATS });
+  const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
+  const codec = await MB.getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: ow, height: oh });
+  if (!codec) throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`);
+  const c = new OffscreenCanvas(ow, oh), x = c.getContext('2d');
+  const glc = new OffscreenCanvas(ow, oh), g = new GLPlayer(glc, { preserve: true });
+  const mix = +$('mix').value;
+  let frames = 0;
+  const conv = await MB.Conversion.init({
+    input,
+    output,
+    video: {
+      codec,
+      quality: MB.QUALITY_HIGH,
+      forceTranscode: true,
+      processedWidth: ow,
+      processedHeight: oh,
+      process: (sample) => {
+        sample.draw(x, 0, 0, ow, oh);
+        g.setNetCoeffs(interpKeys(keys, sample.timestamp));
+        g.draw(c, { mode: 'result', amount: mix, pre: params.amount });
+        frames++;
+        return glc;
+      },
+    },
+  });
+  if (!conv.isValid) throw new Error('無法轉檔：' + conv.discardedTracks.map((d) => d.reason).join(', '));
+  conv.onProgress = (p) => {
+    $('prog').value = 0.5 + p / 2;
+    $('exportNote').textContent = `GPU 套用並編碼 ${Math.round(p * 100)}%（${ow}×${oh}，${codec.toUpperCase()}，${keys.length} 個關鍵幀）`;
+  };
+  cancelExport = () => conv.cancel();
+  await conv.execute();
+  state.lastExport = { fast: true, keys: keys.length, frames, keySec: tKeys };
   download(new Blob([output.target.buffer], { type: 'video/mp4' }), baseName() + '.mp4');
 }
 
@@ -1065,8 +1136,19 @@ export function installHelp(ua) {
   return `<ol>${step('Chrome / Edge：網址列右側的「安裝」圖示 ⊕，或選單 ⋮ →「投放、儲存及分享」→「安裝網頁應用程式」。') + step('Safari（macOS）：「檔案」→「加入 Dock」。')}</ol>`;
 }
 
-if ('serviceWorker' in navigator && location.protocol === 'https:') {
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || /[?&]sw\b/.test(location.search))) { // ?sw：本機測試用
   navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Service Worker 接手後頁面才有跨來源隔離標頭（深度模型多執行緒）。第一次開啟或剛更新時重新整理一次 ——
+  // 只在還沒開任何素材時做，不打斷使用者；sessionStorage 防止不支援的瀏覽器一直重整。
+  const reloadOnce = () => {
+    if (self.crossOriginIsolated || state.src) return;
+    try {
+      if (sessionStorage.getItem('watertool-coi')) return;
+      sessionStorage.setItem('watertool-coi', '1');
+    } catch { return; }
+    location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
 }
 
 renderMethods();
@@ -1074,6 +1156,6 @@ renderParams();
 renderAbout();
 placeOverlay();
 window.__watertool = { // 給自動化測試用
-  state, call, renderGL,
+  state, call, renderGL, select: (id) => selectMethod(id),
   keyInfo: () => ({ ready: !!(track && track.ready && keyG(0)), keys: track ? track.keys.length : 0, matrix: glActive() && !!matrixG() }),
 };

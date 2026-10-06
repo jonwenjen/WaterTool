@@ -14,7 +14,7 @@ void main() {
 const FS = `#version 300 es
 precision highp float;
 uniform sampler2D src, coefA, coefB;
-uniform float split, amount;
+uniform float split, amount, pre; // pre：方法自己的強度（深度模型的「強度」），amount：與原片混合
 uniform int mode; // 0 分割、1 結果、2 原始
 uniform bool useMat; // 全域 3×4 色彩矩陣（Diverout_sim）取代局部係數
 uniform vec4 m0, m1, m2;
@@ -24,7 +24,7 @@ void main() {
   vec3 s = texture(src, uv).rgb;
   vec4 s1 = vec4(s, 1.0);
   vec3 r = useMat ? clamp(vec3(dot(m0, s1), dot(m1, s1), dot(m2, s1)), 0.0, 1.0)
-                  : clamp(texture(coefA, uv).rgb * s + texture(coefB, uv).rgb, 0.0, 1.0);
+                  : clamp(s + (texture(coefA, uv).rgb * s + texture(coefB, uv).rgb - s) * pre, 0.0, 1.0);
   r = mix(s, r, amount);
   bool showResult = mode == 1 || (mode == 0 && uv.x >= split);
   o = vec4(showResult ? r : s, 1.0);
@@ -32,8 +32,9 @@ void main() {
 
 export class GLPlayer {
   /** 不支援 WebGL2 時丟出錯誤（呼叫端改用逐幀處理的舊路徑）。 */
-  constructor(canvas) {
-    const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: false });
+  constructor(canvas, { preserve = false } = {}) {
+    // preserve：匯出時畫完要讀回（交給編碼器），保留繪圖緩衝區
+    const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: preserve });
     if (!gl) throw new Error('WebGL2 不可用');
     this.gl = gl;
     this.canvas = canvas;
@@ -73,6 +74,7 @@ export class GLPlayer {
     this.uSplit = gl.getUniformLocation(prog, 'split');
     this.uMode = gl.getUniformLocation(prog, 'mode');
     this.uAmount = gl.getUniformLocation(prog, 'amount');
+    this.uPre = gl.getUniformLocation(prog, 'pre');
     this.uUseMat = gl.getUniformLocation(prog, 'useMat');
     this.uM = ['m0', 'm1', 'm2'].map((k) => gl.getUniformLocation(prog, k));
     this.resetCoeffs();
@@ -102,7 +104,17 @@ export class GLPlayer {
     if (rows) rows.forEach((r, i) => gl.uniform4f(this.uM[i], r[0], r[1], r[2], r[3]));
   }
 
-  /** source：<video> 或 <canvas>；opts：{ split, mode: 'split'|'result'|'original', amount } */
+  /** 深度模型的係數（net.js estimate 的 g：nw×nh 的 a、b 三個平面）→ 係數貼圖 */
+  setNetCoeffs(g) {
+    const n = g.nw * g.nh, A = new Float32Array(4 * n), B = new Float32Array(4 * n);
+    for (let c = 0; c < 3; c++) {
+      const a = g.a[c], b = g.b[c];
+      for (let i = 0; i < n; i++) { A[4 * i + c] = a[i]; B[4 * i + c] = b[i]; }
+    }
+    this.setCoeffs(A, B, g.nw, g.nh);
+  }
+
+  /** source：<video> 或 <canvas>；opts：{ split, mode: 'split'|'result'|'original', amount, pre } */
   draw(source, opts) {
     const gl = this.gl;
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
@@ -112,6 +124,7 @@ export class GLPlayer {
     gl.uniform1f(this.uSplit, opts.split);
     gl.uniform1i(this.uMode, opts.mode === 'result' ? 1 : opts.mode === 'original' ? 2 : 0);
     gl.uniform1f(this.uAmount, opts.amount ?? 1);
+    gl.uniform1f(this.uPre, opts.pre ?? 1);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 }
