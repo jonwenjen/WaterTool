@@ -53,8 +53,16 @@ node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/
    測試：`node scripts/stress-ui.mjs <影片>`（播放／暫停／連續調參數）、`node scripts/recover-check.mjs <影片>`（模擬卡死與 GPU 畫布被收回）、
    `node scripts/mobile-keys-check.mjs <影片>`（模擬手機不載入隱藏影片）、
    `node scripts/export-identity-check.mjs <影片> <匯出目錄> <方法…>`（每支匯出都最接近自己所選方法的完整計算結果）。
-8. **匯出**：照片 → PNG；影片 → MP4（WebCodecs 編碼，H.264 不可用時自動改 VP9/AV1，**保留原音軌**）。
-9. **影片匯出很快**（「影片匯出方式」選單，預設「快速」）：每 0.5 秒（或 1 秒）的關鍵幀用完整演算法算一次，
+8. **剪輯**（「剪輯」區塊，匯出時套用；設定都可不用）：
+   - **旋轉**：左轉／右轉 90°（手機直拍、相機倒拿）。
+   - **裁切比例**：原始、1:1（IG 貼文）、4:5（IG 貼文、FB）、9:16（Reels、限動、TikTok、Shorts）、16:9（YouTube）、1.91:1（IG 橫式）、4:3、3:4，
+     以「水平／垂直位置」決定保留畫面的哪一部分；區塊內的預覽顯示旋轉、裁切後的樣子。
+   - **速度** 0.25–4×：快轉略過多出來的格（格率不超過原片）、慢動作不補格；聲音跟著變速、音調跟著變（預覽播放也一樣），也可選「移除」聲音。
+   - **時間裁切**：「只保留這段」或「刪除這段」，開始／結束可直接「設為目前時間」；時間軸下方標出保留的區段，預覽播放會跳過刪掉的部分。
+   - 有剪輯時改用自己解碼、編碼的匯出流程（[`lib/edit.js`](lib/edit.js)），調色方式與一般匯出相同；照片支援旋轉與裁切。
+     測試：`node scripts/edit-check.mjs <有聲音的影片>`（以 ffmpeg 做同樣旋轉＋裁切逐像素比對、片長、格數、聲音長度）。
+9. **匯出**：照片 → PNG；影片 → MP4（WebCodecs 編碼，H.264 不可用時自動改 VP9/AV1，**保留原音軌**）。
+10. **影片匯出很快**（「影片匯出方式」選單，預設「快速」）：每 0.5 秒（或 1 秒）的關鍵幀用完整演算法算一次，
    得到「原片 → 結果」的色彩轉換；匯出每一格時把前後兩個關鍵幀在 GPU 上線性內插、套到原解析度，每格只剩 GPU 繪製與編碼。
    - **深度模型**：直接用網路輸出的局部色彩轉換係數，和逐格版逐像素相差 ≤ 1；桌機上 ONNX 另外開多執行緒
      （Service Worker 補上跨來源隔離標頭，第一次開啟會自動重新整理一次）。
@@ -359,6 +367,8 @@ sw.js  manifest.webmanifest       PWA（離線、安裝）
 lib/core.js                       影像基礎：縮放、方框/高斯/最小值濾波、引導濾波、金字塔、Lab
 lib/methods/*.js                  15 種方法（estimate / apply）；net.js = 深度模型共同外殼；diverout.js = Diverout_sim
 lib/temporal.js                   時間一致性
+lib/keyframes.js  lib/edit.js     關鍵幀內插；剪輯（旋轉、裁切比例、速度、時間裁切、聲音重取樣）
+lib/help.js                       每個滑桿的說明（往小／往大／適用／建議）
 lib/pipeline.js                   單幀管線：估計 → 平滑 → 套用 → 去閃爍 → 強度（或直接收關鍵幀內插好的參數）
 lib/metrics.js                    UIQM、UCIQE、色差、PSNR、SSIM
 lib/synth.js                      合成真值場景與影片（測試與「合成示範」）

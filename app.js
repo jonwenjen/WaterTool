@@ -2,6 +2,7 @@
 import { METHODS, byId, defaults } from './lib/methods/index.js';
 import { INFO } from './lib/methods/info.js';
 import { HELP, paramHelp, helpHtml } from './lib/help.js';
+import { ASPECTS, DEFAULT_EDIT, editActive, cropRect, keepSegments, outDuration, nextKept, Resampler, even, drawEdited } from './lib/edit.js';
 import { syntheticClip } from './lib/synth.js';
 import * as C from './lib/core.js';
 import { GLPlayer } from './player-gl.js';
@@ -83,6 +84,7 @@ const state = {
   split: 0.5,
   playing: false,
   models: new Set(), // 已載入的模型檔
+  edit: structuredClone(DEFAULT_EDIT), // 剪輯：旋轉、裁切、速度、時間裁切（匯出時套用）
 };
 function save() {
   try {
@@ -119,6 +121,7 @@ function draw() {
     if (x < w) vctx.drawImage(res, x, 0, w - x, h, x, 0, w - x, h);
   }
   placeOverlay();
+  drawEditPreview();
 }
 
 /** 畫布以 object-fit: contain 顯示；把分割線與標籤放到實際影像範圍內 */
@@ -525,6 +528,7 @@ async function fitLoop() {
 let lastMediaTime = null, demoTimer = 0;
 function onVideoFrame(_now, meta) {
   if (!state.playing) return;
+  if (enforceTrim()) { if (state.playing) nextFrame(); return; }
   if (glActive()) renderGL(meta ? meta.mediaTime : undefined);
   else if (!busy) {
     const t = meta ? meta.mediaTime : video.currentTime;
@@ -548,6 +552,8 @@ function play() {
   resetTemporal();
   startGL();
   if (state.src.kind === 'video') {
+    applySpeed();
+    enforceTrim(true); // 在刪掉的區段裡按播放：先跳到下一段保留的開頭
     const p = video.play();
     if (p) p.catch((e) => {
       if (!state.playing) return; // 使用者已經按了暫停
@@ -697,6 +703,7 @@ function pause0() {
 function setSource(src) {
   state.src = src;
   hasResult = false;
+  resetEdit();
   $('empty').hidden = true;
   // 播放區跟著影片比例（直式影片也能看到全貌）；太高時由 CSS max-height 限制，畫面以 contain 縮放
   viewer.style.aspectRatio = `${src.w} / ${src.h}`;
@@ -1015,7 +1022,7 @@ $('export').onclick = async () => {
       if (!keyG(0)) throw new Error('關鍵幀分析未完成');
     }
     if (state.src.kind === 'image') await exportImage();
-    else if (state.src.kind === 'video') await (fastExport() ? exportVideoFast() : exportVideo());
+    else if (state.src.kind === 'video') await (editActive(state.edit) ? exportEdited() : fastExport() ? exportVideoFast() : exportVideo());
     else await exportDemo();
     $('exportNote').textContent = `完成，用時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒。`;
   } catch (err) {
@@ -1053,7 +1060,16 @@ async function exportImage() {
   await processExport(x, ow, oh, null);
   if (canceled) throw Object.assign(new Error('canceled'), { name: 'ConversionCanceledError' });
   $('prog').value = 1;
-  const blob = await new Promise((ok) => c.toBlob(ok, 'image/png'));
+  let outC = c;
+  const E = state.edit;
+  if (E.rot % 360 || E.aspect !== 'orig') { // 剪輯：旋轉、裁切
+    const crop = cropRect(ow, oh, E.rot, E.aspect, E.panX, E.panY);
+    outC = document.createElement('canvas');
+    outC.width = crop.cw;
+    outC.height = crop.ch;
+    drawEdited(outC.getContext('2d'), c, ow, oh, crop, crop.cw, crop.ch);
+  }
+  const blob = await new Promise((ok) => outC.toBlob(ok, 'image/png'));
   download(blob, baseName() + '.png');
 }
 
@@ -1109,38 +1125,43 @@ async function exportVideo() {
 function fastExport() {
   return state.src.kind === 'video' && +$('netExp').value > 0 && typeof OffscreenCanvas !== 'undefined' && glPlayer() !== null;
 }
-async function exportVideoFast() {
-  if (!('VideoEncoder' in window)) throw new Error('此瀏覽器不支援 WebCodecs 影片編碼（請用新版 Chrome / Edge / Safari 17+）');
+/**
+ * 匯出用的「調色器」：給一格（pw×ph 的畫布）與它的來源時間 t，回傳調好色的畫布。
+ *   快速（fastExport）：關鍵幀完整計算一次 → GPU 依時間內插套用（深度模型係數／Diverout_sim 矩陣／其他方法擬合的係數）
+ *   逐格：每一格都交給背景執行緒完整計算（含時間平滑）
+ */
+async function buildColorizer(pw, ph, isCanceled) {
   const method = state.method, m = byId[method], params = { ...state.params[method] }, interval = +$('netExp').value;
-  const post = +$('post').value;
+  const post = +$('post').value, mix = +$('mix').value;
+  if (!fastExport()) {
+    worker.postMessage({ type: 'reset', slot: 'export' });
+    let prevT = null;
+    return {
+      fast: false, kind: 'frame', keys: [],
+      async apply(canvas, ctx2d, t) {
+        const dt = prevT === null ? 0 : Math.max(0, t - prevT);
+        prevT = t;
+        await processExport(ctx2d, pw, ph, dt, t);
+        return canvas;
+      },
+      dispose() {},
+    };
+  }
   const kind = m.keyframes && post === 0 ? 'matrix' : m.needsModel && post === 0 ? 'net' : 'fit';
-  let canceled = false;
-  cancelExport = () => { canceled = true; };
-  const t0 = performance.now();
   let keys;
   if (kind === 'matrix') {
     await ensureTrack(); // Diverout_sim 自己的關鍵幀（模式決定間隔）
     keys = track.keys;
   } else {
     const msg = kind === 'net' ? undefined : { type: 'keyfit', opts: { method, params, post } };
-    keys = await collectKeys(state.src, method, params, interval, 640, () => canceled, (i, n) => {
+    keys = await collectKeys(state.src, method, params, interval, 640, isCanceled, (i, n) => {
       $('prog').value = ((i - 1) / n) * 0.5;
       $('exportNote').textContent = `${m.short}：關鍵幀 ${i}/${n}（每 ${interval} 秒完整計算一次）`;
     }, msg);
   }
-  if (canceled) throw Object.assign(new Error('canceled'), { name: 'ConversionCanceledError' });
-  const tKeys = (performance.now() - t0) / 1000;
-  const MB = await loadMediabunny();
-  const { w, h } = state.src;
-  const [ow, oh] = outSize(w, h);
-  const input = new MB.Input({ source: new MB.BlobSource(state.src.file), formats: MB.ALL_FORMATS });
-  const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
-  const codec = await MB.getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: ow, height: oh });
-  if (!codec) throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`);
-  const c = new OffscreenCanvas(ow, oh), x = c.getContext('2d');
-  const glc = new OffscreenCanvas(ow, oh), g = new GLPlayer(glc, { preserve: true });
-  const mix = +$('mix').value, pre = kind === 'net' ? params.amount : 1;
-  let frames = 0, seg = -1, firstTs = null;
+  const glc = new OffscreenCanvas(pw, ph), g = new GLPlayer(glc, { preserve: true });
+  const pre = kind === 'net' ? params.amount : 1;
+  let seg = -1;
   // 係數：目前所在區段的前後兩個關鍵幀各上傳一次，GPU 依時間比例內插
   const setKeyPair = (t) => {
     let j = keys.findIndex((k) => k.t >= t);
@@ -1153,6 +1174,35 @@ async function exportVideoFast() {
     }
     g.setKeyMix(a);
   };
+  return {
+    fast: true, kind, keys,
+    apply(canvas, _ctx, t) {
+      if (kind === 'matrix') g.setMatrix(diverMatrix(interpKeys(keys, t)));
+      else setKeyPair(t);
+      g.draw(canvas, { mode: 'result', amount: mix, pre });
+      return glc;
+    },
+    dispose() { g.dispose(); },
+  };
+}
+
+async function exportVideoFast() {
+  if (!('VideoEncoder' in window)) throw new Error('此瀏覽器不支援 WebCodecs 影片編碼（請用新版 Chrome / Edge / Safari 17+）');
+  let canceled = false;
+  cancelExport = () => { canceled = true; };
+  const t0 = performance.now();
+  const { w, h } = state.src;
+  const [ow, oh] = outSize(w, h);
+  const col = await buildColorizer(ow, oh, () => canceled);
+  if (canceled) { col.dispose(); throw Object.assign(new Error('canceled'), { name: 'ConversionCanceledError' }); }
+  const tKeys = (performance.now() - t0) / 1000;
+  const MB = await loadMediabunny();
+  const input = new MB.Input({ source: new MB.BlobSource(state.src.file), formats: MB.ALL_FORMATS });
+  const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
+  const codec = await MB.getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: ow, height: oh });
+  if (!codec) { col.dispose(); throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`); }
+  const c = new OffscreenCanvas(ow, oh), x = c.getContext('2d');
+  let frames = 0, firstTs = null;
   const conv = await MB.Conversion.init({
     input,
     output,
@@ -1165,28 +1215,230 @@ async function exportVideoFast() {
       process: (sample) => {
         sample.draw(x, 0, 0, ow, oh);
         if (firstTs === null) firstTs = sample.timestamp;
-        const t = sample.timestamp - firstTs; // 關鍵幀時間從影片第一格起算
-        if (kind === 'matrix') g.setMatrix(diverMatrix(interpKeys(keys, t)));
-        else setKeyPair(t);
-        g.draw(c, { mode: 'result', amount: mix, pre });
         frames++;
-        return glc;
+        return col.apply(c, x, sample.timestamp - firstTs); // 關鍵幀時間從影片第一格起算
       },
     },
   });
-  if (!conv.isValid) throw new Error('無法轉檔：' + conv.discardedTracks.map((d) => d.reason).join(', '));
+  if (!conv.isValid) { col.dispose(); throw new Error('無法轉檔：' + conv.discardedTracks.map((d) => d.reason).join(', ')); }
   conv.onProgress = (p) => {
     $('prog').value = 0.5 + p / 2;
-    $('exportNote').textContent = `GPU 套用並編碼 ${Math.round(p * 100)}%（${ow}×${oh}，${codec.toUpperCase()}，${keys.length} 個關鍵幀）`;
+    $('exportNote').textContent = `GPU 套用並編碼 ${Math.round(p * 100)}%（${ow}×${oh}，${codec.toUpperCase()}，${col.keys.length} 個關鍵幀）`;
   };
   cancelExport = () => conv.cancel();
   try {
     await conv.execute();
   } finally {
-    g.dispose();
+    col.dispose();
   }
-  state.lastExport = { fast: true, kind, keys: keys.length, frames, keySec: tKeys };
+  state.lastExport = { fast: true, kind: col.kind, keys: col.keys.length, frames, keySec: tKeys };
   download(new Blob([output.target.buffer], { type: 'video/mp4' }), baseName() + '.mp4');
+}
+
+// ---------------- 剪輯：旋轉、裁切、速度、時間裁切 ----------------
+// 設定只在匯出時真正套用；預覽：右側的裁切預覽（暫停畫面）、播放速度、播放時跳過刪掉的區段、時間軸下方標出保留的區段。
+$('aspect').innerHTML = ASPECTS.map(([k, t]) => `<option value="${k}">${t}</option>`).join('');
+for (const id of ['speed', 'panX', 'panY']) $(id).closest('.ctl').insertAdjacentHTML('beforeend', helpHtml(HELP[id]));
+const fmtSec = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
+function resetEdit() {
+  state.edit = structuredClone(DEFAULT_EDIT);
+  if (state.src && state.src.kind === 'video') state.edit.trim.end = +duration().toFixed(1);
+  syncEditUi();
+}
+function syncEditUi() {
+  const E = state.edit;
+  $('rotV').textContent = `${E.rot}°`;
+  $('aspect').value = E.aspect;
+  $('panX').value = String(E.panX);
+  $('panY').value = String(E.panY);
+  $('speed').value = String(E.speed);
+  $('audioMode').value = E.audio;
+  $('trimMode').value = E.trim.mode;
+  $('trimStart').value = String(E.trim.start);
+  $('trimEnd').value = String(E.trim.end);
+  updateEditUi();
+}
+function readEditUi() {
+  const E = state.edit;
+  E.aspect = $('aspect').value;
+  E.panX = +$('panX').value;
+  E.panY = +$('panY').value;
+  E.speed = +$('speed').value;
+  E.audio = $('audioMode').value;
+  E.trim.mode = $('trimMode').value;
+  E.trim.start = Math.max(0, +$('trimStart').value || 0);
+  E.trim.end = Math.max(0, +$('trimEnd').value || 0);
+  updateEditUi();
+}
+function updateEditUi() {
+  const E = state.edit, src = state.src, isVideo = src && src.kind === 'video';
+  $('editCard').querySelector('.vidonly').hidden = !isVideo;
+  $('panXV').textContent = `${Math.round(E.panX * 100)}%`;
+  $('panYV').textContent = `${Math.round(E.panY * 100)}%`;
+  $('speedV').textContent = `${E.speed.toFixed(2)}×`;
+  $('trimRow').hidden = E.trim.mode === 'none';
+  if (!src) { $('editSummary').textContent = ''; return; }
+  const crop = cropRect(src.w, src.h, E.rot, E.aspect, E.panX, E.panY);
+  $('panX').disabled = crop.cw >= crop.rw; // 裁切框和畫面一樣寬：沒有左右可調
+  $('panY').disabled = crop.ch >= crop.rh;
+  const [ow, oh] = outSize(crop.cw, crop.ch);
+  let txt = `輸出 ${ow}×${oh}`;
+  if (isVideo) {
+    const segs = keepSegments(duration(), E.trim);
+    txt += ` · 片長 ${fmtSec(outDuration(segs, E.speed))}（原片 ${fmtSec(duration())}）`;
+    if (E.speed !== 1) txt += ` · ${E.speed}×`;
+    if (E.audio === 'drop') txt += ' · 無聲';
+    // 時間軸下方標出保留的區段
+    const bar = $('trimBar'), D = duration() || 1;
+    bar.hidden = E.trim.mode === 'none';
+    bar.innerHTML = segs.map(([a, b]) => `<span style="left:${(a / D) * 100}%;width:${((b - a) / D) * 100}%"></span>`).join('');
+    applySpeed();
+  }
+  if (!editActive(E)) txt += ' · 未剪輯';
+  $('editSummary').textContent = txt;
+  drawEditPreview();
+}
+function applySpeed() {
+  video.playbackRate = video.defaultPlaybackRate = state.edit.speed;
+  video.preservesPitch = false; // 預覽與匯出一樣：變速時音調跟著變
+}
+/** 播放中跳過刪掉的區段、播到最後一段結尾就停（回傳 true = 這一格已處理） */
+function enforceTrim(starting = false) {
+  if (!state.src || state.src.kind !== 'video' || state.edit.trim.mode === 'none') return false;
+  const segs = keepSegments(duration(), state.edit.trim), t = video.currentTime, nk = nextKept(segs, t);
+  if (nk === null) {
+    if (starting) { video.currentTime = segs[0][0]; return true; }
+    pause();
+    video.currentTime = segs[0][0];
+    return true;
+  }
+  if (nk > t + 0.05) { video.currentTime = nk; return true; }
+  return false;
+}
+video.addEventListener('timeupdate', () => { if (state.playing) enforceTrim(); });
+/** 右側的裁切預覽：目前畫面（暫停時的還原結果）旋轉、裁切後的樣子 */
+function drawEditPreview() {
+  const c = $('editPreview');
+  if (!state.src || !orig.width) return;
+  const E = state.edit, src = hasResult ? res : orig, w = src.width, h = src.height;
+  const crop = cropRect(w, h, E.rot, E.aspect, E.panX, E.panY);
+  const s = Math.min(1, 320 / Math.max(crop.cw, crop.ch));
+  const pw = Math.max(2, Math.round(crop.cw * s)), ph = Math.max(2, Math.round(crop.ch * s));
+  if (c.width !== pw || c.height !== ph) { c.width = pw; c.height = ph; }
+  drawEdited(c.getContext('2d'), src, w, h, crop, pw, ph);
+}
+$('rotL').onclick = () => { state.edit.rot = (state.edit.rot + 270) % 360; syncEditUi(); };
+$('rotR').onclick = () => { state.edit.rot = (state.edit.rot + 90) % 360; syncEditUi(); };
+for (const id of ['aspect', 'audioMode', 'trimMode']) $(id).addEventListener('change', readEditUi);
+for (const id of ['panX', 'panY', 'speed', 'trimStart', 'trimEnd']) $(id).addEventListener('input', readEditUi);
+$('trimStartNow').onclick = () => { $('trimStart').value = current().toFixed(1); readEditUi(); };
+$('trimEndNow').onclick = () => { $('trimEnd').value = current().toFixed(1); readEditUi(); };
+$('editReset').onclick = resetEdit;
+syncEditUi();
+
+/**
+ * 有剪輯的影片匯出（不經 Mediabunny 的 Conversion，自己解碼、編碼）：
+ * 每一格 → 調色（快速：GPU 關鍵幀內插；逐格：完整計算）→ 旋轉、裁切 → 依保留區段與速度排出新的時間 → 編碼。
+ * 速度 > 1 時略過多出來的格，輸出格率維持原片；聲音逐段剪下後線性重取樣（音調跟著速度變）。
+ */
+async function exportEdited() {
+  if (!('VideoEncoder' in window)) throw new Error('此瀏覽器不支援 WebCodecs 影片編碼（請用新版 Chrome / Edge / Safari 17+）');
+  const E = structuredClone(state.edit), MB = await loadMediabunny();
+  let canceled = false;
+  cancelExport = () => { canceled = true; };
+  const cancelErr = () => Object.assign(new Error('canceled'), { name: 'ConversionCanceledError' });
+  const input = new MB.Input({ source: new MB.BlobSource(state.src.file), formats: MB.ALL_FORMATS });
+  const vt = await input.getPrimaryVideoTrack();
+  if (!vt) throw new Error('找不到影片軌');
+  const at = E.audio === 'keep' ? await input.getPrimaryAudioTrack() : null;
+  const t0 = await vt.getFirstTimestamp(), D = (await vt.computeDuration()) - t0;
+  const segs = keepSegments(D, E.trim), speed = E.speed, total = outDuration(segs, speed);
+  const { w, h } = state.src;
+  const full = cropRect(w, h, E.rot, E.aspect, E.panX, E.panY);
+  const [ow, oh] = outSize(full.cw, full.ch);
+  const k = Math.min(1, ow / full.cw); // 調色在「剛好夠裁出輸出尺寸」的解析度上做
+  const pw = even(w * k), ph = even(h * k), crop = cropRect(pw, ph, E.rot, E.aspect, E.panX, E.panY);
+  const col = await buildColorizer(pw, ph, () => canceled);
+  let output = null;
+  try {
+    if (canceled) throw cancelErr();
+    const vcodec = await MB.getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: ow, height: oh });
+    if (!vcodec) throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`);
+    output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
+    const outC = new OffscreenCanvas(ow, oh), outX = outC.getContext('2d');
+    const vsrc = new MB.CanvasSource(outC, { codec: vcodec, bitrate: MB.QUALITY_HIGH });
+    output.addVideoTrack(vsrc);
+    let asrc = null;
+    if (at) {
+      const acodec = await MB.getFirstEncodableAudioCodec(['aac', 'opus'], { numberOfChannels: at.numberOfChannels, sampleRate: at.sampleRate });
+      if (acodec) { asrc = new MB.AudioSampleSource({ codec: acodec, bitrate: MB.QUALITY_HIGH }); output.addAudioTrack(asrc); }
+    }
+    await output.start();
+    const frameC = new OffscreenCanvas(pw, ph), frameX = frameC.getContext('2d', { willReadFrequently: true });
+    const vsink = new MB.VideoSampleSink(vt), asink = asrc ? new MB.AudioSampleSink(at) : null;
+    const p0 = col.fast ? 0.5 : 0;
+    // 輸出時間格線：原片的平均格率。快轉時每個格點只放一格（多的略過），格率不會超過原片
+    const rate = (await vt.computePacketStats(120).catch(() => null))?.averagePacketRate || 30, iv = 1 / rate;
+    let base = 0, frames = 0, slot = 0;
+    for (const [a, b] of segs) {
+      for await (const smp of vsink.samples(t0 + a, t0 + b)) {
+        if (canceled) { smp.close(); throw cancelErr(); }
+        const t = smp.timestamp - t0, gap = smp.duration || 1 / 30;
+        if (t < a - 1e-4 || t >= b) { smp.close(); continue; }
+        const ot = (base + t - a) / speed;
+        if (ot < slot - iv * 0.5) { smp.close(); continue; } // 快轉：這個格點已經有格了
+        slot = Math.max(slot, ot) + iv;
+        smp.draw(frameX, 0, 0, pw, ph);
+        smp.close();
+        const colored = await col.apply(frameC, frameX, t);
+        drawEdited(outX, colored, pw, ph, crop, ow, oh);
+        await vsrc.add(ot, Math.max(iv, gap / speed));
+        frames++;
+        $('prog').value = p0 + (1 - p0) * Math.min(1, ot / total);
+        $('exportNote').textContent = `剪輯並編碼 ${Math.round(Math.min(1, ot / total) * 100)}%（${ow}×${oh}，${vcodec.toUpperCase()}）`;
+      }
+      if (asink) await addAudioSegment(MB, asink, asrc, t0, a, b, base / speed, speed, () => canceled);
+      if (canceled) throw cancelErr();
+      base += b - a;
+    }
+    vsrc.close();
+    if (asrc) asrc.close();
+    await output.finalize();
+    state.lastExport = { edited: true, kind: col.kind, frames, w: ow, h: oh, duration: total, audio: !!asrc };
+    download(new Blob([output.target.buffer], { type: 'video/mp4' }), baseName() + '.mp4');
+  } catch (err) {
+    if (output && output.state !== 'finalized') await output.cancel().catch(() => {});
+    throw err;
+  } finally {
+    col.dispose();
+  }
+}
+
+/** 一段聲音：剪下 [a, b]、依速度重取樣，從輸出時間 outStart 開始接上 */
+async function addAudioSegment(MB, asink, asrc, t0, a, b, outStart, speed, isCanceled) {
+  let rs = null, emitted = 0;
+  for await (const smp of asink.samples(t0 + a, t0 + b)) {
+    if (isCanceled()) { smp.close(); return; }
+    const sr = smp.sampleRate, nf = smp.numberOfFrames, ch = smp.numberOfChannels, st = smp.timestamp - t0;
+    const i0 = Math.max(0, Math.round((a - st) * sr)), i1 = Math.min(nf, Math.round((b - st) * sr));
+    if (i1 <= i0) { smp.close(); continue; }
+    const planes = [];
+    for (let c = 0; c < ch; c++) {
+      const buf = new Float32Array(nf);
+      smp.copyTo(buf, { planeIndex: c, format: 'f32-planar' });
+      planes.push(buf.subarray(i0, i1));
+    }
+    smp.close();
+    if (speed !== 1 && !rs) rs = new Resampler(ch, speed);
+    const out = rs ? rs.push(planes) : planes, n = out[0].length;
+    if (!n) continue;
+    const data = new Float32Array(n * ch);
+    out.forEach((pl, c) => data.set(pl, c * n));
+    const as = new MB.AudioSample({ data, format: 'f32-planar', numberOfChannels: ch, sampleRate: sr, timestamp: outStart + emitted / sr });
+    await asrc.add(as);
+    as.close();
+    emitted += n;
+  }
 }
 
 async function exportDemo() {

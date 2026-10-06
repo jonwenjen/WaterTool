@@ -53,7 +53,7 @@
       <div class="transport">
         <button class="icon" id="play" type="button" aria-label="播放" disabled>▶</button>
         <button class="icon" id="mute" type="button" aria-label="關閉聲音" title="聲音" disabled>🔊</button>
-        <input type="range" id="seek" min="0" max="1000" value="0" disabled aria-label="時間軸">
+        <div class="seekwrap"><input type="range" id="seek" min="0" max="1000" value="0" disabled aria-label="時間軸"><div class="trimbar" id="trimBar" hidden></div></div>
         <span class="time" id="time">0:00 / 0:00</span>
         <div class="seg" role="tablist" aria-label="檢視方式">
           <button type="button" data-view="split" class="on">分割</button>
@@ -94,6 +94,31 @@
           <div class="ctl"><label for="tEvery">每 N 幀重新估計 <output id="tEveryV"></output></label><input type="range" id="tEvery" min="1" max="10" step="1" value="1"></div>
         </div>
         <p class="note">逐幀還原會因每幀估計值不同而閃爍。這裡把全域參數做時間平滑（換鏡頭自動重設），並把靜止區域的低頻亮度/色彩對齊前一幀。</p>
+      </section>
+
+      <section class="card" id="editCard">
+        <h2>剪輯 <span class="muted small">（匯出時套用）</span></h2>
+        <div class="controls">
+          <div class="ctl"><label>旋轉 <output id="rotV">0°</output></label>
+            <div class="row"><button class="btn" id="rotL" type="button">⟲ 左轉 90°</button><button class="btn" id="rotR" type="button">⟳ 右轉 90°</button></div></div>
+          <div class="ctl"><label for="aspect">裁切比例</label><select id="aspect"></select></div>
+          <div class="ctl" id="panXc"><label for="panX">水平位置 <output id="panXV"></output></label><input type="range" id="panX" min="0" max="1" step="0.01" value="0.5"></div>
+          <div class="ctl" id="panYc"><label for="panY">垂直位置 <output id="panYV"></output></label><input type="range" id="panY" min="0" max="1" step="0.01" value="0.5"></div>
+          <canvas id="editPreview" class="editprev" width="320" height="180" aria-label="裁切預覽"></canvas>
+          <div class="vidonly">
+            <div class="ctl"><label for="speed">速度 <output id="speedV"></output></label><input type="range" id="speed" min="0.25" max="4" step="0.25" value="1"></div>
+            <div class="ctl"><label for="audioMode">聲音</label>
+              <select id="audioMode"><option value="keep">保留（變速時音調跟著變）</option><option value="drop">移除</option></select></div>
+            <div class="ctl"><label for="trimMode">時間裁切</label>
+              <select id="trimMode"><option value="none">不裁切</option><option value="keep">只保留這段</option><option value="cut">刪除這段</option></select></div>
+            <div class="trimrow" id="trimRow" hidden>
+              <label>開始 <input type="number" id="trimStart" min="0" step="0.1" value="0"> 秒</label><button class="link" id="trimStartNow" type="button">設為目前時間</button>
+              <label>結束 <input type="number" id="trimEnd" min="0" step="0.1" value="0"> 秒</label><button class="link" id="trimEndNow" type="button">設為目前時間</button>
+            </div>
+          </div>
+          <p class="note" id="editSummary"></p>
+          <div class="row"><button class="btn" id="editReset" type="button">重設剪輯</button></div>
+        </div>
       </section>
 
       <section class="card">
