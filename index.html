@@ -122,6 +122,12 @@
             <div class="trimrow" id="trimRow" hidden>
               <label>開始 <input type="number" id="trimStart" min="0" step="0.1" value="0"> 秒</label><button class="link" id="trimStartNow" type="button">設為目前時間</button>
               <label>結束 <input type="number" id="trimEnd" min="0" step="0.1" value="0"> 秒</label><button class="link" id="trimEndNow" type="button">設為目前時間</button>
+              <div class="seg follow" id="trimFollow" role="group" aria-label="跟著播放">
+                <button type="button" data-follow="none" class="on">不跟</button>
+                <button type="button" data-follow="start">開始跟著播放</button>
+                <button type="button" data-follow="end">結束跟著播放</button>
+              </div>
+              <p class="note follownote">選「開始」或「結束」後播放或拖時間軸，那一端會跟著目前位置走，看到想要的地方按暫停就定住。</p>
             </div>
           </div>
           <p class="note" id="editSummary"></p>

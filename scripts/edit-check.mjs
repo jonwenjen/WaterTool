@@ -155,6 +155,34 @@ await page.waitForTimeout(400);
 const tr = await page.evaluate(() => ({ start: window.__watertool.state.edit.trim.start, input: +document.getElementById('trimStart').value, t: document.getElementById('video').currentTime, label: document.getElementById('trimLabel').textContent }));
 ok(Math.abs(tr.start - srcDur * 0.25) < 0.3 && Math.abs(tr.t - tr.start) < 0.1 && Math.abs(tr.input - tr.start) < 0.06, `拖曳時間把手：開始 ${tr.start.toFixed(2)} 秒（片長 25% ≈ ${(srcDur * 0.25).toFixed(2)}），影片跳到 ${tr.t.toFixed(2)} 秒，顯示「${tr.label}」`);
 
+// 4e. 「結束跟著播放」：播放時結束點跟著走、按暫停定住；不會自動停在結束點；拖開始把手時自動停止跟隨
+await page.click('#editReset');
+await page.selectOption('#trimMode', 'keep');
+await setVal('trimStart', 1);
+await setVal('trimEnd', 3);
+await page.evaluate(() => new Promise((ok) => { const v = document.getElementById('video'); v.addEventListener('seeked', ok, { once: true }); v.currentTime = 2; }));
+await page.click('#trimFollow button[data-follow="end"]');
+const q0 = await page.evaluate(() => window.__watertool.state.edit.trim.end);
+await page.click('#play');
+await page.waitForTimeout(2000);
+await page.click('#play'); // 暫停
+await page.waitForTimeout(300);
+const q1 = await page.evaluate(() => ({ end: window.__watertool.state.edit.trim.end, t: document.getElementById('video').currentTime, input: +document.getElementById('trimEnd').value, playing: window.__watertool.state.playing }));
+ok(Math.abs(q0 - 2) < 0.05 && q1.end > 3.2 && Math.abs(q1.end - q1.t) < 0.1 && Math.abs(q1.input - q1.end) < 0.06, `結束跟著播放：選取時跳到 ${q0.toFixed(2)} 秒，播放後停在 ${q1.end.toFixed(2)} 秒（目前位置 ${q1.t.toFixed(2)}，沒有在原本的 3 秒停下）`);
+await page.evaluate(() => new Promise((ok) => { const v = document.getElementById('video'); v.addEventListener('seeked', ok, { once: true }); v.currentTime = 6; }));
+await page.waitForTimeout(200);
+const q2 = await page.evaluate(() => window.__watertool.state.edit.trim.end);
+ok(Math.abs(q2 - 6) < 0.05, `暫停時拖時間軸，結束點也跟著到 ${q2.toFixed(2)} 秒`);
+await page.locator('#trimTrack').scrollIntoViewIfNeeded();
+const rail2 = await page.locator('#trimTrack .trimrail').boundingBox(), hs2 = await page.locator('#thStart').boundingBox();
+await page.mouse.move(hs2.x + hs2.width / 2, hs2.y + hs2.height / 2);
+await page.mouse.down();
+await page.mouse.move(rail2.x + rail2.width * 0.1, hs2.y + hs2.height / 2, { steps: 3 });
+await page.mouse.up();
+await page.waitForTimeout(300);
+const q3 = await page.evaluate(() => ({ end: window.__watertool.state.edit.trim.end, follow: document.querySelector('#trimFollow button.on').dataset.follow }));
+ok(q3.follow === 'none' && Math.abs(q3.end - 6) < 0.05, `拖開始把手時自動停止跟隨，結束點仍在 ${q3.end.toFixed(2)} 秒`);
+
 // 5. 逐格完整計算 + 4× + 1:1
 await page.click('#editReset');
 await page.selectOption('#netExp', '0');

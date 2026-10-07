@@ -529,6 +529,7 @@ let lastMediaTime = null, demoTimer = 0;
 function onVideoFrame(_now, meta) {
   if (!state.playing) return;
   if (enforceTrim()) { if (state.playing) nextFrame(); return; }
+  followTrim();
   if (glActive()) renderGL(meta ? meta.mediaTime : undefined);
   else if (!busy) {
     const t = meta ? meta.mediaTime : video.currentTime;
@@ -778,10 +779,10 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------------- 檢視方式 ----------------
-for (const b of document.querySelectorAll('.seg button')) {
+for (const b of document.querySelectorAll('.seg button[data-view]')) {
   b.onclick = () => {
     state.view = b.dataset.view;
-    for (const x of document.querySelectorAll('.seg button')) x.classList.toggle('on', x === b);
+    for (const x of document.querySelectorAll('.seg button[data-view]')) x.classList.toggle('on', x === b);
     $('compare').hidden = state.view !== 'compare';
     draw();
     if (state.view === 'compare') runCompare();
@@ -1242,6 +1243,7 @@ for (const id of ['speed', 'panX', 'panY', 'zoom']) $(id).closest('.ctl').insert
 const fmtSec = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
 function resetEdit() {
   state.edit = structuredClone(DEFAULT_EDIT);
+  if (trimFollow !== 'none') setTrimFollow('none');
   if (state.src && state.src.kind === 'video') state.edit.trim.end = +duration().toFixed(1);
   syncEditUi();
 }
@@ -1268,6 +1270,7 @@ function readEditUi() {
   E.speed = +$('speed').value;
   E.audio = $('audioMode').value;
   E.trim.mode = $('trimMode').value;
+  if (E.trim.mode === 'none' && trimFollow !== 'none') setTrimFollow('none');
   E.trim.start = Math.max(0, +$('trimStart').value || 0);
   E.trim.end = Math.max(0, +$('trimEnd').value || 0);
   updateEditUi();
@@ -1309,6 +1312,7 @@ function applySpeed() {
 /** 播放中跳過刪掉的區段、播到最後一段結尾就停（回傳 true = 這一格已處理） */
 function enforceTrim(starting = false) {
   if (!state.src || state.src.kind !== 'video' || state.edit.trim.mode === 'none') return false;
+  if (trimFollow !== 'none') return false; // 正在用播放位置選開始／結束：不要跳過或停下
   const segs = keepSegments(duration(), state.edit.trim), t = video.currentTime, nk = nextKept(segs, t);
   if (nk === null) {
     if (starting) { video.currentTime = segs[0][0]; return true; }
@@ -1319,7 +1323,29 @@ function enforceTrim(starting = false) {
   if (nk > t + 0.05) { video.currentTime = nk; return true; }
   return false;
 }
-video.addEventListener('timeupdate', () => { if (state.playing) enforceTrim(); });
+video.addEventListener('timeupdate', () => { if (state.playing) enforceTrim(); followTrim(); });
+
+// 「開始／結束跟著播放」：選定的那一端跟著目前播放位置（播放或拖時間軸都會跟），按暫停就停在那裡
+let trimFollow = 'none', followTimer = 0;
+function setTrimFollow(f) {
+  trimFollow = state.edit.trim.mode === 'none' ? 'none' : f;
+  for (const b of document.querySelectorAll('#trimFollow button')) b.classList.toggle('on', b.dataset.follow === trimFollow);
+  $('thStart').classList.toggle('follow', trimFollow === 'start');
+  $('thEnd').classList.toggle('follow', trimFollow === 'end');
+  followTrim(true);
+}
+function followTrim(now = false) {
+  if (trimFollow === 'none' || !state.src || state.src.kind !== 'video' || state.edit.trim.mode === 'none') return;
+  const t = +video.currentTime.toFixed(2), key = trimFollow;
+  if (state.edit.trim[key] === t && !now) return;
+  state.edit.trim[key] = t;
+  $(key === 'start' ? 'trimStart' : 'trimEnd').value = t.toFixed(1);
+  drawTrimTrack(); // 輕量：只更新時間軸把手；摘要與預覽稍後再更新
+  clearTimeout(followTimer);
+  followTimer = setTimeout(updateEditUi, now ? 0 : 200);
+}
+for (const b of document.querySelectorAll('#trimFollow button')) b.onclick = () => setTrimFollow(b.dataset.follow);
+video.addEventListener('seeked', () => followTrim());
 /**
  * 裁切預覽：整個畫面（暫停時的還原結果，已旋轉）＋裁切框，框外變暗。直接拖曳就能移動裁切位置。
  */
@@ -1462,7 +1488,13 @@ for (const [id, key] of [['thStart', 'start'], ['thEnd', 'end']]) {
     if (state.src?.kind === 'video') video.currentTime = t; // 預覽這一格
     updateEditUi();
   };
-  h.addEventListener('pointerdown', (e) => { on = true; try { h.setPointerCapture(e.pointerId); } catch { /* 同上 */ } e.preventDefault(); move(e); });
+  h.addEventListener('pointerdown', (e) => {
+    on = true;
+    if (trimFollow !== 'none') setTrimFollow('none'); // 手動拖把手：停止跟著播放（不然另一端會被拉到這裡）
+    try { h.setPointerCapture(e.pointerId); } catch { /* 合成事件或已釋放的指標 */ }
+    e.preventDefault();
+    move(e);
+  });
   h.addEventListener('pointermove', (e) => { if (on) move(e); });
   h.addEventListener('pointerup', () => { on = false; });
   h.addEventListener('pointercancel', () => { on = false; });
