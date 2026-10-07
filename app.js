@@ -464,6 +464,26 @@ function setFitCoeffs(A, B, w, h, snap = false) {
   }
 }
 
+/**
+ * 播放中換方法或改參數：GPU 播放要馬上用新的設定 ——
+ * 新方法不是關鍵幀（Diverout_sim）模式就重新啟動色彩計算（之前可能因關鍵幀模式而停了），換方法時直接換、不漸變；
+ * 標籤與狀態列也一起更新（以前會停在舊方法、右半其實是沒處理的原片）。
+ */
+function refreshPlayback(methodChanged) {
+  placeOverlay();
+  $('stMethod').innerHTML = `<b>${byId[state.method].name}</b>`;
+  if (!state.playing || !glActive()) return;
+  fitGen++; // 換方法或參數前送出的色彩計算，結果回來時丟掉
+  if (methodChanged) { ramp = null; lastFitTime = null; }
+  if (matrixG()) {
+    $('stTime').textContent = `播放：GPU 即時套用 · ${track.keys.length} 個關鍵幀線性內插`;
+  } else {
+    $('stTime').textContent = '播放：GPU 即時套用 · 色彩計算中…';
+    fitLoop();
+  }
+  renderGL();
+}
+
 function renderGL(t) {
   if (!glActive()) return;
   if (ramp) gl.setKeyMix(rampK(performance.now()));
@@ -490,7 +510,7 @@ function stopGL() {
   draw();
 }
 
-let fitRunning = false, lastFitTime = null;
+let fitRunning = false, lastFitTime = null, fitGen = 0;
 async function fitLoop() {
   if (fitRunning) return;
   fitRunning = true;
@@ -506,8 +526,10 @@ async function fitLoop() {
       const data = fctx.getImageData(0, 0, w, h);
       const t0 = performance.now();
       if (globalThis.__fitDelay) await new Promise((ok) => setTimeout(ok, globalThis.__fitDelay)); // 量測用：模擬慢裝置
+      const gen = fitGen;
       const r = await call({ type: 'fit', rgba: data.data.buffer, w, h, opts: buildOpts(dt), div: globalThis.__fitDiv || FIT_DIV }, [data.data.buffer]);
       if (!state.playing || !glActive() || matrixG()) break;
+      if (gen !== fitGen) continue; // 這次是舊方法／舊參數算的
       setFitCoeffs(new Float32Array(r.a), new Float32Array(r.b), r.w, r.h, r.info && r.info.cut);
       state.fits = (state.fits || 0) + 1;
       if (state.src.kind === 'demo') renderGL();
@@ -856,6 +878,7 @@ function selectMethod(id) {
   resetTemporal();
   processFrame(null);
   ensureTrack();
+  refreshPlayback(true);
 }
 function setRange(id, v) {
   $(id).value = String(v);
@@ -910,6 +933,7 @@ function onParamChange() {
     resetTemporal();
     ensureTrack();
     if (!state.playing) processFrame(null);
+    refreshPlayback(false);
     if (state.view === 'compare') runCompare();
   }, 60);
 }
