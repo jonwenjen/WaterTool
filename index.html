@@ -154,6 +154,16 @@
         </div>
         <progress id="prog" max="1" value="0" hidden></progress>
         <p class="note" id="exportNote"></p>
+        <details class="batch" id="batchBox">
+          <summary>多部匯出 <span class="muted small" id="batchCount"></span></summary>
+          <p class="note">用目前的方法、參數與上面的輸出設定，把「目前的影片」和這裡加入的影片一部一部自動匯出。每部影片各自分析、各自用模型計算顏色。</p>
+          <div class="row"><label class="btn" for="batchFiles">＋ 加入影片…</label><input id="batchFiles" type="file" accept="video/*" multiple hidden><button class="btn" id="batchClear" type="button">清空</button></div>
+          <ul class="batchlist" id="batchList" aria-live="polite"></ul>
+          <label class="switch"><input type="checkbox" id="batchEdit"> <span>其他影片也套用目前的旋轉、裁切比例、速度與聲音設定（時間裁切每部不同，只用在目前的影片）</span></label>
+          <div class="row"><button class="btn primary" id="batchRun" type="button" disabled>全部匯出</button></div>
+          <p class="note" id="batchNote"></p>
+          <p class="note">每部完成就各自下載；手機瀏覽器可能會詢問「允許這個網站下載多個檔案」，請選允許。匯出時會依序切換到各部影片，結束後回到原本的影片與剪輯設定。按「取消」會停止目前這部並略過其餘。</p>
+        </details>
       </section>
 
       <section class="card about">

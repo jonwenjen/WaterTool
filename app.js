@@ -718,9 +718,12 @@ video.addEventListener('seeked', () => {
 });
 
 // ---------------- 載入素材 ----------------
+let lastOpenError = '';
+/** 開啟素材；成功回傳 true */
 async function openFile(file) {
-  if (!file) return;
+  if (!file) return false;
   pause0();
+  lastOpenError = '';
   try {
     if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|bmp)$/i.test(file.name)) {
       const bitmap = await createImageBitmap(file);
@@ -739,8 +742,11 @@ async function openFile(file) {
       });
       setSource({ kind: 'video', w: video.videoWidth, h: video.videoHeight, file, name: file.name });
     }
+    return true;
   } catch (err) {
+    lastOpenError = err.message;
     showError(err.message);
+    return false;
   }
 }
 function pause0() {
@@ -762,7 +768,7 @@ function setSource(src) {
   $('play').disabled = $('seek').disabled = src.kind === 'image';
   $('mute').disabled = src.kind !== 'video';
   video.hidden = src.kind !== 'video';
-  $('export').disabled = false;
+  $('export').disabled = batchRunning; // 多部匯出中會依序開啟各影片，按鈕維持鎖住
   $('exportNote').textContent = src.kind === 'image' ? `照片 ${src.w}×${src.h}，匯出 PNG。` : `影片 ${src.w}×${src.h}，匯出 MP4（H.264，保留音軌）。`;
   if (src.kind === 'demo') $('exportNote').textContent = '合成示範影片，匯出 MP4。';
   $('stQuality').textContent = '';
@@ -771,6 +777,7 @@ function setSource(src) {
   processFrame(null);
   ensureTrack();
   if (state.view === 'compare') runCompare();
+  if (!batchRunning) renderBatch();
 }
 
 $('file').addEventListener('change', (e) => openFile(e.target.files[0]));
@@ -1078,53 +1085,162 @@ const isReadError = (err) => !!err && /network error|NotReadable|could not be re
 
 const baseName = () => (state.src.name || 'watertool').replace(/\.[^.]+$/, '') + `_${state.method}`;
 
+/** 匯出目前的素材（單部匯出與多部匯出共用）；失敗時丟出錯誤 */
+async function exportCurrent() {
+  worker.postMessage({ type: 'reset', slot: 'export' });
+  if (usesKeys()) {
+    $('exportNote').textContent = '分析關鍵幀…';
+    await ensureTrack();
+    if (!keyG(0)) await ensureTrack(); // 先前分析失敗或剛被新的設定取代：再分析一次
+    if (!keyG(0)) throw new Error('關鍵幀分析未完成' + (trackError ? '：' + trackError : '（分析時影片或設定被換掉了，請再按一次匯出）'));
+  }
+  if (state.src.kind === 'image') await exportImage();
+  else if (state.src.kind === 'video') {
+    const run = () => (editActive(state.edit) ? exportEdited() : fastExport() ? exportVideoFast() : exportVideo());
+    try {
+      await run();
+    } catch (err) {
+      if (!isReadError(err) || !blobStream) throw err;
+      // 讀檔串流失敗：關掉所有讀檔器、改用 arrayBuffer 分段讀，再試一次
+      console.warn('讀取原片失敗，改用分段讀取重試：', err);
+      blobStream = false;
+      closeExportInputs();
+      $('exportNote').textContent = '讀取原片失敗，改用較穩定的讀法重試…';
+      $('prog').value = 0;
+      await run();
+    }
+  } else await exportDemo();
+}
+const exportErrorText = (err) => (isReadError(err)
+  ? '手機無法再讀取原片（' + err.message + '）。請按「開啟影片／照片」重新選一次這支影片再匯出。'
+  : err.message);
+/** 匯出中：鎖住會改變素材的按鈕 */
+function exportUi(on) {
+  $('prog').hidden = !on;
+  if (on) $('prog').value = 0;
+  $('export').disabled = on;
+  $('cancel').hidden = !on;
+  $('file').disabled = $('demo').disabled = $('batchFiles').disabled = $('batchClear').disabled = on;
+  if (!on) cancelExport = null;
+  renderBatch();
+}
+
 $('export').onclick = async () => {
-  if (!state.src) return;
+  if (!state.src || batchRunning) return;
   pause0();
-  const prog = $('prog');
-  prog.hidden = false;
-  prog.value = 0;
-  $('export').disabled = true;
-  $('cancel').hidden = false;
+  exportUi(true);
   const t0 = performance.now();
   try {
-    worker.postMessage({ type: 'reset', slot: 'export' });
-    if (usesKeys()) {
-      $('exportNote').textContent = '分析關鍵幀…';
-      await ensureTrack();
-      if (!keyG(0)) await ensureTrack(); // 先前分析失敗或剛被新的設定取代：再分析一次
-      if (!keyG(0)) throw new Error('關鍵幀分析未完成' + (trackError ? '：' + trackError : '（分析時影片或設定被換掉了，請再按一次匯出）'));
-    }
-    if (state.src.kind === 'image') await exportImage();
-    else if (state.src.kind === 'video') {
-      const run = () => (editActive(state.edit) ? exportEdited() : fastExport() ? exportVideoFast() : exportVideo());
-      try {
-        await run();
-      } catch (err) {
-        if (!isReadError(err) || !blobStream) throw err;
-        // 讀檔串流失敗：關掉所有讀檔器、改用 arrayBuffer 分段讀，再試一次
-        console.warn('讀取原片失敗，改用分段讀取重試：', err);
-        blobStream = false;
-        closeExportInputs();
-        $('exportNote').textContent = '讀取原片失敗，改用較穩定的讀法重試…';
-        prog.value = 0;
-        await run();
-      }
-    } else await exportDemo();
+    await exportCurrent();
     $('exportNote').textContent = `完成，用時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒。`;
   } catch (err) {
     if (err && err.name === 'ConversionCanceledError') $('exportNote').textContent = '已取消。';
-    else if (isReadError(err)) showError('匯出失敗：手機無法再讀取原片（' + err.message + '）。請按「開啟影片／照片」重新選一次這支影片再匯出。');
-    else showError('匯出失敗：' + err.message);
+    else showError('匯出失敗：' + exportErrorText(err));
   } finally {
     closeExportInputs(); // 這次匯出開的讀檔器全部關掉
-    $('export').disabled = false;
-    $('cancel').hidden = true;
-    prog.hidden = true;
-    cancelExport = null;
+    exportUi(false);
   }
 };
-$('cancel').onclick = () => cancelExport && cancelExport();
+
+// ---------------- 多部匯出 ----------------
+// 目前的影片＋另外選的影片，用同一組方法、參數與輸出設定一部一部匯出。每部影片各自開啟、各自分析關鍵幀與計算顏色
+// （等於自動幫你「開啟 → 匯出」），完成後回到原本的影片與剪輯設定。
+let batchFiles = []; // 另外選的檔案
+let batchJobs = null; // 匯出中：[{ file, current, status, msg }]
+let batchRunning = false, batchCanceled = false;
+const BATCH_STATUS = { wait: '等待中', run: '匯出中…', ok: '✓ 完成', fail: '✗ 失敗', skip: '已取消' };
+function renderBatch() {
+  const list = $('batchList');
+  const cur = state.src && state.src.file && state.src.kind !== 'demo' ? state.src.file : null;
+  const rows = batchJobs || [...(cur ? [{ file: cur, current: true }] : []), ...batchFiles.map((file) => ({ file }))];
+  list.innerHTML = '';
+  for (const r of rows) {
+    const li = document.createElement('li');
+    if (r.status) li.className = r.status;
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = (r.current ? '目前：' : '') + r.file.name;
+    const st = document.createElement('span');
+    st.className = 'st';
+    st.textContent = r.status ? BATCH_STATUS[r.status] + (r.msg ? '：' + r.msg : '') : `${(r.file.size / 2 ** 20).toFixed(1)} MB`;
+    li.append(name, st);
+    if (!r.current && !batchRunning) {
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'link';
+      rm.textContent = '移除';
+      rm.setAttribute('aria-label', `移除 ${r.file.name}`);
+      rm.onclick = () => { batchFiles = batchFiles.filter((f) => f !== r.file); renderBatch(); };
+      li.append(rm);
+    }
+    list.append(li);
+  }
+  const n = rows.length;
+  $('batchCount').textContent = batchFiles.length ? `（${n} 部）` : '';
+  $('batchRun').textContent = batchRunning ? '多部匯出中…' : `全部匯出（${n} 部）`;
+  $('batchRun').disabled = batchRunning || !cur || !batchFiles.length || !$('cancel').hidden;
+}
+$('batchFiles').addEventListener('change', (e) => {
+  const have = new Set(batchFiles.map((f) => f.name + f.size));
+  for (const f of e.target.files) if (!have.has(f.name + f.size)) { batchFiles.push(f); have.add(f.name + f.size); }
+  e.target.value = '';
+  renderBatch();
+});
+$('batchClear').onclick = () => { batchFiles = []; renderBatch(); };
+renderBatch();
+$('batchRun').onclick = async () => {
+  if (!state.src || !state.src.file || batchRunning || !batchFiles.length) return;
+  pause0();
+  const orig = { file: state.src.file, edit: structuredClone(state.edit), t: state.src.kind === 'video' ? video.currentTime : 0 };
+  // 其他影片要不要套用目前的旋轉、裁切比例、速度、聲音（時間裁切每部影片不同，不套用）
+  const shared = () => ({ ...structuredClone(DEFAULT_EDIT), rot: orig.edit.rot, aspect: orig.edit.aspect, zoom: orig.edit.zoom, panX: orig.edit.panX, panY: orig.edit.panY, speed: orig.edit.speed, audio: orig.edit.audio });
+  batchJobs = [{ file: orig.file, current: true }, ...batchFiles.map((file) => ({ file }))];
+  for (const j of batchJobs) j.status = 'wait';
+  batchRunning = true;
+  batchCanceled = false;
+  exportUi(true);
+  const t0 = performance.now();
+  try {
+    for (const [i, job] of batchJobs.entries()) {
+      if (batchCanceled) { job.status = 'skip'; continue; }
+      job.status = 'run';
+      renderBatch();
+      $('batchNote').textContent = `多部匯出 ${i + 1}/${batchJobs.length}：${job.file.name}`;
+      try {
+        if (!job.current) {
+          if (!(await openFile(job.file))) throw new Error(lastOpenError || '無法開啟');
+          if ($('batchEdit').checked && state.src.kind === 'video') { state.edit = shared(); syncEditUi(); }
+        }
+        $('prog').value = 0;
+        await exportCurrent();
+        job.status = 'ok';
+      } catch (err) {
+        if (err && err.name === 'ConversionCanceledError') { job.status = 'skip'; batchCanceled = true; }
+        else { job.status = 'fail'; job.msg = exportErrorText(err); }
+      } finally {
+        closeExportInputs();
+      }
+      renderBatch();
+    }
+  } finally {
+    // 回到原本的影片與剪輯設定
+    if (state.src?.file !== orig.file) await openFile(orig.file);
+    if (state.src?.file === orig.file) {
+      state.edit = orig.edit;
+      syncEditUi();
+      if (state.src.kind === 'video' && orig.t) video.currentTime = orig.t;
+    }
+    const ok = batchJobs.filter((j) => j.status === 'ok').length, all = batchJobs.length;
+    state.lastBatch = batchJobs.map((j) => ({ name: j.file.name, status: j.status, msg: j.msg || '' }));
+    batchRunning = false;
+    exportUi(false);
+    batchJobs = null;
+    // 狀態留在清單上直到下次變動
+    $('batchNote').textContent = `多部匯出結束：${ok}/${all} 部完成` + (ok < all ? '（失敗或取消的見下方說明）' : '') + `，用時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒。`;
+    $('exportNote').textContent = state.lastBatch.filter((j) => j.status !== 'ok').map((j) => `${j.name}：${BATCH_STATUS[j.status]}${j.msg ? '（' + j.msg + '）' : ''}`).join('；');
+  }
+};
+$('cancel').onclick = () => { if (batchRunning) batchCanceled = true; if (cancelExport) cancelExport(); };
 
 async function processExport(ctx2d, w, h, dt, t = 0) {
   const data = ctx2d.getImageData(0, 0, w, h);
