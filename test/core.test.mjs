@@ -122,6 +122,19 @@ test('關鍵幀自動加密：開頭幾格偏色時細分到相鄰兩格，漸�
   assert.equal(cut.length, 2);
 });
 
+test('Diverout_sim 關鍵幀也能自動加密（參數差異用典型水下顏色上的輸出比較）', async () => {
+  const { refineKeys } = await import('../lib/keyframes.js');
+  const { diverDist } = await import('../lib/methods/diverout.js');
+  const P = (lo) => ({ lo: [lo, 10, 10], hi: [120, 200, 200], w: 1, k: 0.5 });
+  assert.equal(diverDist(P(5), P(5)), 0);
+  assert.ok(diverDist(P(5), P(60)) > 0.1);
+  const fps = 30, truth = (f) => (f < 4 ? 60 : 5 + 0.3 * Math.sin(f));
+  const estimate = async (ts) => ts.map((t) => { const f = Math.floor(t * fps + 1e-6); return { t: f / fps, g: P(truth(f)) }; });
+  const keys = await refineKeys(await estimate([0, 1, 2, 3 - 1 / fps]), estimate, { dist: diverDist, budget: 8 });
+  const ts = keys.map((k) => Math.round(k.t * fps));
+  assert.ok(ts.includes(3) && ts.includes(4), `偏色結束的第 3、4 格都要有關鍵幀：${ts}`);
+});
+
 test('裁切框依比例縮放', async () => {
   const E = await import('../lib/edit.js');
   const c = E.cropRect(1920, 1080, 0, '9:16', 0, 1, 0.5); // 一半大小、貼齊左下
