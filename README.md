@@ -55,7 +55,9 @@ node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/
    `node scripts/export-identity-check.mjs <影片> <匯出目錄> <方法…>`（每支匯出都最接近自己所選方法的完整計算結果）、
    `node scripts/split-sync-check.mjs <影片>`（播放中、暫停後換方法：分割兩半是同一時刻、色彩改用新方法、標籤更新）。
    連續匯出：每次匯出後關閉讀原片的讀檔器；Android Chrome 讀相簿影片的串流偶爾回報 `network error`（常在第二次匯出），
-   這時自動改用分段讀取重試，仍讀不到才請你重新選一次影片。測試：`node scripts/reexport-check.mjs <影片>`。
+   這時自動改用分段讀取重試，仍讀不到才請你重新選一次影片。Diverout_sim 的整支片關鍵幀分析也一樣先改分段讀取再試，
+   不再退到手機上常常不能用的看不見 `<video>`；匯出前分析失敗會重新分析一次，仍失敗才顯示原因。
+   測試：`node scripts/reexport-check.mjs <影片>`（含模擬手機：讀檔串流失敗＋看不見的 `<video>` 不載入）。
 8. **剪輯**（「剪輯」區塊，匯出時套用；設定都可不用）：
    - **旋轉**：左轉／右轉 90°（手機直拍、相機倒拿）。
    - **裁切比例**：原始、1:1（IG 貼文）、4:5（IG 貼文、FB）、9:16（Reels、限動、TikTok、Shorts）、16:9（YouTube）、1.91:1（IG 橫式）、4:3、3:4，

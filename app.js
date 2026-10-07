@@ -198,6 +198,7 @@ function keyG(t) {
   if (!usesKeys() || !track || !track.ready || track.src !== state.src || track.pkey !== paramKey()) return null;
   return interpKeys(track.keys, t);
 }
+let trackError = ''; // 上一次關鍵幀分析失敗的原因（匯出時顯示）
 function ensureTrack() {
   if (!usesKeys()) return Promise.resolve();
   if (track && track.src === state.src && track.pkey === paramKey()) return track.promise;
@@ -207,12 +208,14 @@ function ensureTrack() {
   t.promise = buildTrack(t, () => gen !== trackGen).then(() => {
     if (gen !== trackGen) return;
     t.ready = true;
+    trackError = '';
     if (byId[state.method].keyframes) $('modelState').hidden = true;
     if (!state.playing) processFrame(null);
     else if (glActive()) $('stTime').textContent = `播放：GPU 即時套用 · ${t.keys.length} 個關鍵幀線性內插`;
   }).catch((err) => {
     if (gen !== trackGen) return;
     track = null;
+    trackError = err.message;
     showError('關鍵幀分析失敗：' + err.message);
   });
   return t.promise;
@@ -258,43 +261,51 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
   }
   // 影片：用 Mediabunny（WebCodecs）直接解出關鍵幀 —— 不必播放、不必跳轉 <video>。
   // 手機瀏覽器常常不替看不見的 <video> 載入資料（loadeddata 永遠不來），以前會一直停在「分析關鍵幀」。
-  let input = null;
-  try {
-    const MB = await loadMediabunny();
-    input = openInput(MB, src.file);
-    const vt = await input.getPrimaryVideoTrack();
-    if (!vt || !(await vt.canDecode())) throw new Error('無法解碼');
-    const t0 = await vt.getFirstTimestamp(), D = (await vt.computeDuration()) - t0;
-    const times = segs ? keyframeTimesIn(segs, interval) : keyframeTimes(D, interval), [w, h] = C.fitSize(src.w, src.h, edge);
-    const sink = new MB.CanvasSink(vt, { width: w, height: h, fit: 'fill', poolSize: 1 });
-    // 依序解出 ts 各時間的畫面並估計；細分加算的關鍵幀用該幀的實際時間（細分到相鄰兩格才準）
-    const grab = async (ts, each, exact = false) => {
-      const got = [];
-      let j = 0;
-      // 最後一個關鍵幀取最後一幀（時間 = 片長時解碼器回傳最後一幀）
-      for await (const wc of sink.canvasesAtTimestamps(ts.map((t) => t0 + Math.min(t, Math.max(0, D - 0.001))))) {
-        if (stale()) break;
-        each(j);
-        got.push(wc ? await estimateAt((x, cw, ch) => x.drawImage(wc.canvas, 0, 0, cw, ch), exact ? Math.max(0, wc.timestamp - t0) : ts[j]) : null);
-        j++;
+  // 讀檔串流失敗（Android 常見 network error）時改用分段讀取再試一次，不要退到手機上常常不能用的 <video>
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let input = null;
+    try {
+      const MB = await loadMediabunny();
+      input = openInput(MB, src.file, 'keys');
+      const vt = await input.getPrimaryVideoTrack();
+      if (!vt || !(await vt.canDecode())) throw new Error('無法解碼');
+      const t0 = await vt.getFirstTimestamp(), D = (await vt.computeDuration()) - t0;
+      const times = segs ? keyframeTimesIn(segs, interval) : keyframeTimes(D, interval), [w, h] = C.fitSize(src.w, src.h, edge);
+      const sink = new MB.CanvasSink(vt, { width: w, height: h, fit: 'fill', poolSize: 1 });
+      // 依序解出 ts 各時間的畫面並估計；細分加算的關鍵幀用該幀的實際時間（細分到相鄰兩格才準）
+      const grab = async (ts, each, exact = false) => {
+        const got = [];
+        let j = 0;
+        // 最後一個關鍵幀取最後一幀（時間 = 片長時解碼器回傳最後一幀）
+        for await (const wc of sink.canvasesAtTimestamps(ts.map((t) => t0 + Math.min(t, Math.max(0, D - 0.001))))) {
+          if (stale()) break;
+          each(j);
+          got.push(wc ? await estimateAt((x, cw, ch) => x.drawImage(wc.canvas, 0, 0, cw, ch), exact ? Math.max(0, wc.timestamp - t0) : ts[j]) : null);
+          j++;
+        }
+        return got;
+      };
+      keys.push(...(await grab(times, (j) => note(j + 1, times.length))).filter(Boolean));
+      if (stale()) return keys;
+      if (!keys.length) throw new Error('沒有解出任何關鍵幀');
+      if (!refine) return keys;
+      let extra = 0;
+      return await refineKeys(keys, (ts) => grab(ts, () => note(++extra, 0), true), {
+        segs, budget: Math.max(8, Math.ceil(keys.length / 2)), stale, ...(typeof refine === 'function' ? { dist: refine } : {}),
+      });
+    } catch (err) {
+      if (stale()) return keys;
+      keys.length = 0;
+      if (isReadError(err) && blobStream) {
+        console.warn('讀取原片失敗，改用分段讀取重試關鍵幀：', err);
+        blobStream = false; // 之後的讀檔（含匯出）也改用分段讀
+        continue;
       }
-      return got;
-    };
-    keys.push(...(await grab(times, (j) => note(j + 1, times.length))).filter(Boolean));
-    if (stale()) return keys;
-    if (!keys.length) throw new Error('沒有解出任何關鍵幀');
-    if (!refine) return keys;
-    let extra = 0;
-    return await refineKeys(keys, (ts) => grab(ts, () => note(++extra, 0), true), {
-      segs, budget: Math.max(8, Math.ceil(keys.length / 2)), stale, ...(typeof refine === 'function' ? { dist: refine } : {}),
-    });
-  } catch (err) {
-    if (stale()) return keys;
-    console.warn('Mediabunny 取關鍵幀失敗，改用 <video> 跳轉：', err);
-    if (isReadError(err)) blobStream = false; // 之後的讀檔（含匯出）改用分段讀
-    keys.length = 0;
-  } finally {
-    closeInput(input);
+      console.warn('Mediabunny 取關鍵幀失敗，改用 <video> 跳轉：', err);
+      break;
+    } finally {
+      closeInput(input);
+    }
   }
   // 備援：看不見的 <video> 逐一跳轉（每一步都有逾時，不會無限等待）
   const kv = document.createElement('video');
@@ -1050,11 +1061,14 @@ function download(blob, name) {
 // Android Chrome 讀相簿檔案的串流偶爾會失敗（TypeError: network error，第二次匯出特別常見）→ 之後改用較慢但穩定的 arrayBuffer 分段讀
 let blobStream = true;
 const openInputs = new Set();
-function openInput(MB, file) {
+function openInput(MB, file, owner = 'export') {
   const input = new MB.Input({ source: new MB.BlobSource(file, { useStreamReader: blobStream }), formats: MB.ALL_FORMATS });
+  input.owner = owner;
   openInputs.add(input);
   return input;
 }
+/** 匯出自己開的讀檔器（關鍵幀分析的讀檔器由 collectKeys 自己關，不能被匯出的收尾關掉） */
+const closeExportInputs = () => { for (const i of [...openInputs]) if (i.owner === 'export') closeInput(i); };
 function closeInput(input) {
   if (!input) return;
   openInputs.delete(input);
@@ -1078,7 +1092,8 @@ $('export').onclick = async () => {
     if (usesKeys()) {
       $('exportNote').textContent = '分析關鍵幀…';
       await ensureTrack();
-      if (!keyG(0)) throw new Error('關鍵幀分析未完成');
+      if (!keyG(0)) await ensureTrack(); // 先前分析失敗或剛被新的設定取代：再分析一次
+      if (!keyG(0)) throw new Error('關鍵幀分析未完成' + (trackError ? '：' + trackError : '（分析時影片或設定被換掉了，請再按一次匯出）'));
     }
     if (state.src.kind === 'image') await exportImage();
     else if (state.src.kind === 'video') {
@@ -1090,7 +1105,7 @@ $('export').onclick = async () => {
         // 讀檔串流失敗：關掉所有讀檔器、改用 arrayBuffer 分段讀，再試一次
         console.warn('讀取原片失敗，改用分段讀取重試：', err);
         blobStream = false;
-        for (const i of [...openInputs]) closeInput(i);
+        closeExportInputs();
         $('exportNote').textContent = '讀取原片失敗，改用較穩定的讀法重試…';
         prog.value = 0;
         await run();
@@ -1102,7 +1117,7 @@ $('export').onclick = async () => {
     else if (isReadError(err)) showError('匯出失敗：手機無法再讀取原片（' + err.message + '）。請按「開啟影片／照片」重新選一次這支影片再匯出。');
     else showError('匯出失敗：' + err.message);
   } finally {
-    for (const i of [...openInputs]) closeInput(i); // 這次匯出開的讀檔器全部關掉
+    closeExportInputs(); // 這次匯出開的讀檔器全部關掉
     $('export').disabled = false;
     $('cancel').hidden = true;
     prog.hidden = true;
