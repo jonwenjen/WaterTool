@@ -115,11 +115,13 @@ a { color: var(--accent); }
 .th:focus-visible { outline: 3px solid var(--accent); }
 .th.follow { background: var(--accent2); box-shadow: 0 0 0 2px #fff, 0 0 10px var(--accent2); animation: thpulse 1s ease-in-out infinite alternate; }
 @keyframes thpulse { from { opacity: 1; } to { opacity: .55; } }
-.trimrow .follow, .trimrow .follownote { grid-column: 1 / -1; justify-self: start; margin: 0; }
+.trimrow .follow, .trimrow .follownote { grid-column: 1 / -1; justify-self: start; margin: 0; min-width: 0; max-width: 100%; }
+.trimrow .follow { flex-wrap: wrap; border-radius: 14px; }
 .triml { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.vidonly { display: grid; gap: inherit; }
+.vidonly { display: grid; grid-template-columns: minmax(0, 1fr); gap: inherit; }
 .vidonly[hidden] { display: none !important; }
-.trimrow { display: grid; grid-template-columns: max-content max-content; gap: 6px 12px; align-items: center; font-size: 13px; }
+.trimrow { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; align-items: center; font-size: 13px; }
+.trimrow > .link { justify-self: start; }
 .trimrow input[type=number] { width: 6.5em; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg2); color: var(--text); font: inherit; }
 .small { font-size: 12px; font-weight: 400; }
 .muted { color: var(--muted); }
@@ -159,7 +161,7 @@ a { color: var(--accent); }
 .method .s { color: var(--muted); font-size: 12px; }
 .method .k { color: var(--accent2); font-size: 11px; margin-left: 6px; }
 
-.controls { display: grid; gap: 10px; }
+.controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .ctl label { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
 .ctl output { color: var(--accent2); font-variant-numeric: tabular-nums; }
 .help { margin-top: 4px; font-size: 12px; color: var(--muted); }

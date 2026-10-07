@@ -219,6 +219,23 @@ const le6 = await page.evaluate(() => window.__watertool.state.lastExport);
 ok(le6.keys === 3, `只保留 0–1 秒時只替這 1 秒算關鍵幀：${le6.keys} 個（整支 ${srcDur.toFixed(0)} 秒要 ${Math.ceil(srcDur / 0.5) + 1} 個）`);
 ok(w6 === 202 && h6 === 360 && Math.abs(d6 - 4) < 0.2 && Math.abs(a6 - 4) < 0.25, `深度模型 + 9:16 + 0.25×：${w6}×${h6}、畫面 ${d6.toFixed(2)} 秒、聲音 ${a6.toFixed(2)} 秒（應約 4）`);
 
+// 手機寬度：時間裁切列、跟隨按鈕、說明都展開時剪輯卡片也不能超出畫面
+await page.click('#editReset');
+await page.selectOption('#trimMode', 'keep');
+await page.selectOption('#aspect', '9:16');
+await page.evaluate(() => document.querySelector('#trimFollow [data-follow="end"]').click());
+for (const w of [360, 412]) {
+  await page.setViewportSize({ width: w, height: 800 });
+  await page.waitForTimeout(200);
+  const wide = await page.evaluate(() => {
+    const vw = document.documentElement.clientWidth, card = document.getElementById('editCard').getBoundingClientRect();
+    return { sw: document.documentElement.scrollWidth, vw, right: Math.round(card.right) };
+  });
+  ok(wide.sw <= wide.vw + 1 && wide.right <= wide.vw, `手機寬度 ${w}px（時間裁切展開）剪輯卡片不超出畫面：頁寬 ${wide.sw}、卡片右緣 ${wide.right}`);
+}
+await page.evaluate(() => document.querySelector('#trimFollow [data-follow="none"]').click());
+await page.setViewportSize({ width: 1280, height: 720 });
+
 // 7. 照片：左轉 90° + 1:1
 await page.click('#editReset');
 await page.evaluate(() => window.__watertool.select('ancuti'));
