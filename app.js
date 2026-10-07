@@ -7,7 +7,7 @@ import { syntheticClip } from './lib/synth.js';
 import * as C from './lib/core.js';
 import { GLPlayer } from './player-gl.js';
 import { diverMatrix } from './lib/methods/diverout.js';
-import { interpKeys, keyframeTimes, keyframeTimesIn, keyframeIndices } from './lib/keyframes.js';
+import { interpKeys, keyframeTimes, keyframeTimesIn, keyframeIndices, refineKeys, gDist } from './lib/keyframes.js';
 
 const $ = (id) => document.getElementById(id);
 const fmtTime = (s) => (Number.isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00');
@@ -227,7 +227,7 @@ async function buildTrack(t, stale) {
  * 整支片每隔 interval 秒取一個關鍵幀（長邊 edge），由背景執行緒估計參數 → [{ t, g }]。
  * 影片另開一個看不見的 <video> 逐一跳過去（不影響正在看的畫面）。stale() 為真時中止。
  */
-async function collectKeys(src, method, params, interval, edge, stale, note, msg = { type: 'estimate', method, params }, segs = null) {
+async function collectKeys(src, method, params, interval, edge, stale, note, msg = { type: 'estimate', method, params }, segs = null, refine = false) {
   const keys = [];
   const estimateAt = async (draw, time) => {
     const [w, h] = C.fitSize(src.w, src.h, edge);
@@ -238,7 +238,7 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
     draw(x, w, h);
     const data = x.getImageData(0, 0, w, h);
     const r = await call({ ...msg, rgba: data.data.buffer, w, h }, [data.data.buffer]);
-    keys.push({ t: time, g: r.g });
+    return { t: time, g: r.g };
   };
   if (src.kind === 'demo') {
     const n = demo.frames.length, idx = keyframeIndices(n, demo.fps, interval);
@@ -249,7 +249,7 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
       if (stale()) return keys;
       note(j + 1, idx.length);
       tmp.getContext('2d').putImageData(demo.frames[i], 0, 0);
-      await estimateAt((x, w, h) => x.drawImage(tmp, 0, 0, w, h), i / demo.fps);
+      keys.push(await estimateAt((x, w, h) => x.drawImage(tmp, 0, 0, w, h), i / demo.fps));
     }
     return keys;
   }
@@ -263,16 +263,25 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
     const t0 = await vt.getFirstTimestamp(), D = (await vt.computeDuration()) - t0;
     const times = segs ? keyframeTimesIn(segs, interval) : keyframeTimes(D, interval), [w, h] = C.fitSize(src.w, src.h, edge);
     const sink = new MB.CanvasSink(vt, { width: w, height: h, fit: 'fill', poolSize: 1 });
-    let j = 0;
-    // 最後一個關鍵幀取最後一幀（時間 = 片長時解碼器回傳最後一幀）
-    for await (const wc of sink.canvasesAtTimestamps(times.map((t) => t0 + Math.min(t, Math.max(0, D - 0.001))))) {
-      if (stale()) return keys;
-      note(j + 1, times.length);
-      if (wc) await estimateAt((x, cw, ch) => x.drawImage(wc.canvas, 0, 0, cw, ch), times[j]);
-      j++;
-    }
-    if (keys.length) return keys;
-    throw new Error('沒有解出任何關鍵幀');
+    // 依序解出 ts 各時間的畫面並估計；refine 時關鍵幀時間用該幀的實際時間（細分到相鄰兩格才準）
+    const grab = async (ts, each) => {
+      const got = [];
+      let j = 0;
+      // 最後一個關鍵幀取最後一幀（時間 = 片長時解碼器回傳最後一幀）
+      for await (const wc of sink.canvasesAtTimestamps(ts.map((t) => t0 + Math.min(t, Math.max(0, D - 0.001))))) {
+        if (stale()) break;
+        each(j);
+        got.push(wc ? await estimateAt((x, cw, ch) => x.drawImage(wc.canvas, 0, 0, cw, ch), refine ? Math.max(0, wc.timestamp - t0) : ts[j]) : null);
+        j++;
+      }
+      return got;
+    };
+    keys.push(...(await grab(times, (j) => note(j + 1, times.length))).filter(Boolean));
+    if (stale()) return keys;
+    if (!keys.length) throw new Error('沒有解出任何關鍵幀');
+    if (!refine) return keys;
+    let extra = 0;
+    return await refineKeys(keys, (ts) => grab(ts, () => note(++extra, 0)), { segs, budget: Math.max(8, Math.ceil(keys.length / 2)), stale });
   } catch (err) {
     if (stale()) return keys;
     console.warn('Mediabunny 取關鍵幀失敗，改用 <video> 跳轉：', err);
@@ -299,7 +308,7 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
       const seeked = wait(kv, 'seeked', 5000, '影片跳轉逾時，無法分析關鍵幀');
       kv.currentTime = Math.min(time, Math.max(0, D - 0.04)); // 最後一個關鍵幀 = 最後一幀
       await seeked;
-      await estimateAt((x, w, h) => x.drawImage(kv, 0, 0, w, h), time);
+      keys.push(await estimateAt((x, w, h) => x.drawImage(kv, 0, 0, w, h), time));
     }
   } finally {
     kv.removeAttribute('src');
@@ -1180,9 +1189,10 @@ async function buildColorizer(pw, ph, isCanceled, segs = null) {
   } else {
     const msg = kind === 'net' ? undefined : { type: 'keyfit', opts: { method, params, post } };
     keys = await collectKeys(state.src, method, params, interval, 640, isCanceled, (i, n) => {
+      if (!n) { $('exportNote').textContent = `${m.short}：顏色變化較大處加算關鍵幀 ${i}…`; return; }
       $('prog').value = ((i - 1) / n) * 0.5;
       $('exportNote').textContent = `${m.short}：關鍵幀 ${i}/${n}（每 ${interval} 秒完整計算一次）`;
-    }, msg, segs); // 有時間裁切時只在保留的區段排關鍵幀
+    }, msg, segs, true); // 有時間裁切時只在保留的區段排關鍵幀；顏色突變處自動加密
   }
   const glc = new OffscreenCanvas(pw, ph), g = new GLPlayer(glc, { preserve: true });
   const pre = kind === 'net' ? params.amount : 1;
@@ -1210,6 +1220,9 @@ async function buildColorizer(pw, ph, isCanceled, segs = null) {
     dispose() { g.dispose(); },
   };
 }
+
+/** 測試用：各關鍵幀時間與和前一個的差異 */
+const keyLog = (col) => col.keys.map((k, i) => [+k.t.toFixed(3), i && col.kind !== 'matrix' ? +gDist(col.keys[i - 1].g, k.g).toFixed(4) : 0]);
 
 async function exportVideoFast() {
   if (!('VideoEncoder' in window)) throw new Error('此瀏覽器不支援 WebCodecs 影片編碼（請用新版 Chrome / Edge / Safari 17+）');
@@ -1256,7 +1269,7 @@ async function exportVideoFast() {
   } finally {
     col.dispose();
   }
-  state.lastExport = { fast: true, kind: col.kind, keys: col.keys.length, frames, keySec: tKeys };
+  state.lastExport = { fast: true, kind: col.kind, keys: col.keys.length, frames, keySec: tKeys, keyLog: keyLog(col) };
   download(new Blob([output.target.buffer], { type: 'video/mp4' }), baseName() + '.mp4');
 }
 
@@ -1625,7 +1638,7 @@ async function exportEdited() {
     vsrc.close();
     if (asrc) asrc.close();
     await output.finalize();
-    state.lastExport = { edited: true, kind: col.kind, keys: col.keys.length, frames, w: ow, h: oh, duration: total, audio: !!asrc };
+    state.lastExport = { edited: true, kind: col.kind, keys: col.keys.length, keyLog: keyLog(col), frames, w: ow, h: oh, duration: total, audio: !!asrc };
     download(new Blob([output.target.buffer], { type: 'video/mp4' }), baseName() + '.mp4');
   } catch (err) {
     if (output && output.state !== 'finalized') await output.cancel().catch(() => {});

@@ -100,6 +100,28 @@ test('時間裁切後只在保留區段排關鍵幀', async () => {
   assert.deepEqual(keyframeTimesIn([[0, 1], [4, 5]], 1), [0, 1, 4, 5]);
 });
 
+test('關鍵幀自動加密：開頭幾格偏色時細分到相鄰兩格，漸變與平常的小波動不細分', async () => {
+  const { refineKeys, gDist } = await import('../lib/keyframes.js');
+  const n = 16, G = (v) => ({ nw: 4, nh: 4, a: [0, 1, 2].map(() => new Float32Array(n).fill(1)), b: [0, 1, 2].map(() => new Float32Array(n).fill(v)) });
+  assert.ok(Math.abs(gDist(G(0), G(0.1)) - 0.1) < 1e-6);
+  assert.equal(gDist(G(0), { lo: [0], hi: [1] }), Infinity);
+  const fps = 30;
+  // 每格的「正確」轉換：前 4 格偏色（b = 0.3），之後是很慢的漸變加一點小抖動
+  const truth = (f) => (f < 4 ? 0.3 : 0.01 * (f / fps) + 0.004 * Math.sin(f * 7));
+  let calls = 0;
+  const estimate = async (ts) => ts.map((t) => { calls++; const f = Math.floor(t * fps + 1e-6); return { t: f / fps, g: G(truth(f)) }; });
+  const base = await estimate([0, 0.5, 1, 1.5, 2, 2.5, 3 - 1 / fps]);
+  calls = 0;
+  const keys = await refineKeys(base, estimate, { budget: 8 });
+  const ts = keys.map((k) => Math.round(k.t * fps));
+  assert.ok(ts.includes(3) && ts.includes(4), `偏色結束的第 3、4 格都要有關鍵幀：${ts}`);
+  assert.ok(calls <= 6, `只在開頭細分：多算了 ${calls} 個`);
+  assert.deepEqual(ts, [...ts].sort((x, y) => x - y));
+  // 不跨時間裁切的區段細分
+  const cut = await refineKeys([{ t: 0, g: G(0) }, { t: 1, g: G(0.5) }], estimate, { segs: [[0, 0.4], [0.6, 1]] });
+  assert.equal(cut.length, 2);
+});
+
 test('裁切框依比例縮放', async () => {
   const E = await import('../lib/edit.js');
   const c = E.cropRect(1920, 1080, 0, '9:16', 0, 1, 0.5); // 一半大小、貼齊左下
