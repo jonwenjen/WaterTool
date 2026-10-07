@@ -2,7 +2,7 @@
 import { METHODS, byId, defaults } from './lib/methods/index.js';
 import { INFO } from './lib/methods/info.js';
 import { HELP, paramHelp, helpHtml } from './lib/help.js';
-import { ASPECTS, DEFAULT_EDIT, editActive, cropRect, keepSegments, outDuration, nextKept, Resampler, even, drawEdited } from './lib/edit.js';
+import { ASPECTS, DEFAULT_EDIT, MIN_ZOOM, editActive, cropActive, cropRect, keepSegments, outDuration, nextKept, Resampler, even, drawEdited } from './lib/edit.js';
 import { syntheticClip } from './lib/synth.js';
 import * as C from './lib/core.js';
 import { GLPlayer } from './player-gl.js';
@@ -1062,8 +1062,8 @@ async function exportImage() {
   $('prog').value = 1;
   let outC = c;
   const E = state.edit;
-  if (E.rot % 360 || E.aspect !== 'orig') { // 剪輯：旋轉、裁切
-    const crop = cropRect(ow, oh, E.rot, E.aspect, E.panX, E.panY);
+  if (cropActive(E)) { // 剪輯：旋轉、裁切
+    const crop = cropRect(ow, oh, E.rot, E.aspect, E.panX, E.panY, E.zoom);
     outC = document.createElement('canvas');
     outC.width = crop.cw;
     outC.height = crop.ch;
@@ -1238,7 +1238,7 @@ async function exportVideoFast() {
 // ---------------- 剪輯：旋轉、裁切、速度、時間裁切 ----------------
 // 設定只在匯出時真正套用；預覽：右側的裁切預覽（暫停畫面）、播放速度、播放時跳過刪掉的區段、時間軸下方標出保留的區段。
 $('aspect').innerHTML = ASPECTS.map(([k, t]) => `<option value="${k}">${t}</option>`).join('');
-for (const id of ['speed', 'panX', 'panY']) $(id).closest('.ctl').insertAdjacentHTML('beforeend', helpHtml(HELP[id]));
+for (const id of ['speed', 'panX', 'panY', 'zoom']) $(id).closest('.ctl').insertAdjacentHTML('beforeend', helpHtml(HELP[id]));
 const fmtSec = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
 function resetEdit() {
   state.edit = structuredClone(DEFAULT_EDIT);
@@ -1249,6 +1249,7 @@ function syncEditUi() {
   const E = state.edit;
   $('rotV').textContent = `${E.rot}°`;
   $('aspect').value = E.aspect;
+  $('zoom').value = String(E.zoom);
   $('panX').value = String(E.panX);
   $('panY').value = String(E.panY);
   $('speed').value = String(E.speed);
@@ -1261,6 +1262,7 @@ function syncEditUi() {
 function readEditUi() {
   const E = state.edit;
   E.aspect = $('aspect').value;
+  E.zoom = +$('zoom').value;
   E.panX = +$('panX').value;
   E.panY = +$('panY').value;
   E.speed = +$('speed').value;
@@ -1274,11 +1276,12 @@ function updateEditUi() {
   const E = state.edit, src = state.src, isVideo = src && src.kind === 'video';
   $('editCard').querySelector('.vidonly').hidden = !isVideo;
   $('panXV').textContent = `${Math.round(E.panX * 100)}%`;
+  $('zoomV').textContent = `${Math.round(E.zoom * 100)}%`;
   $('panYV').textContent = `${Math.round(E.panY * 100)}%`;
   $('speedV').textContent = `${E.speed.toFixed(2)}×`;
   $('trimRow').hidden = E.trim.mode === 'none';
   if (!src) { $('editSummary').textContent = ''; return; }
-  const crop = cropRect(src.w, src.h, E.rot, E.aspect, E.panX, E.panY);
+  const crop = cropRect(src.w, src.h, E.rot, E.aspect, E.panX, E.panY, E.zoom);
   $('panX').disabled = crop.cw >= crop.rw; // 裁切框和畫面一樣寬：沒有左右可調
   $('panY').disabled = crop.ch >= crop.rh;
   const [ow, oh] = outSize(crop.cw, crop.ch);
@@ -1297,6 +1300,7 @@ function updateEditUi() {
   if (!editActive(E)) txt += ' · 未剪輯';
   $('editSummary').textContent = txt;
   drawEditPreview();
+  drawTrimTrack();
 }
 function applySpeed() {
   video.playbackRate = video.defaultPlaybackRate = state.edit.speed;
@@ -1324,7 +1328,7 @@ function drawEditPreview() {
   const c = $('editPreview');
   if (!state.src || !orig.width) return;
   const E = state.edit, src = hasResult ? res : orig, w = src.width, h = src.height;
-  const full = cropRect(w, h, E.rot, 'orig'), crop = cropRect(w, h, E.rot, E.aspect, E.panX, E.panY);
+  const full = cropRect(w, h, E.rot, 'orig'), crop = cropRect(w, h, E.rot, E.aspect, E.panX, E.panY, E.zoom);
   const s = Math.min(1, 320 / Math.max(full.rw, full.rh));
   const pw = Math.max(2, Math.round(full.rw * s)), ph = Math.max(2, Math.round(full.rh * s));
   if (c.width !== pw || c.height !== ph) { c.width = pw; c.height = ph; }
@@ -1339,7 +1343,10 @@ function drawEditPreview() {
   x.strokeStyle = '#fff';
   x.lineWidth = 2;
   x.strokeRect(bx + 1, by + 1, bw - 2, bh - 2);
-  if (E.aspect !== 'orig') { // 三分線
+  x.fillStyle = '#fff'; // 四個角的把手：拖曳可依比例縮放
+  const hs = Math.max(6, Math.min(12, Math.min(bw, bh) / 5));
+  for (const [hx, hy] of [[bx, by], [bx + bw, by], [bx, by + bh], [bx + bw, by + bh]]) x.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+  if (E.aspect !== 'orig' || E.zoom < 1) { // 三分線
     x.strokeStyle = 'rgba(255,255,255,.35)';
     x.lineWidth = 1;
     x.beginPath();
@@ -1349,38 +1356,131 @@ function drawEditPreview() {
     }
     x.stroke();
   }
-  c.classList.toggle('draggable', crop.cw < crop.rw || crop.ch < crop.rh);
-  previewGeom = { s, crop };
+  c.classList.toggle('draggable', true);
+  previewGeom = { s, crop, max: cropRect(w, h, E.rot, E.aspect, 0.5, 0.5, 1) };
 }
-// 拖曳裁切框（滑鼠、觸控都可以）：移動量換算成畫面像素，再換成水平／垂直位置
+// 預覽上的裁切框：拖框內 = 移動；拖四個角 = 依比例縮放（對角固定）；雙指捏合或滑鼠滾輪 = 以框中心縮放
+function setCropBox(x, y, zoom) {
+  const g = previewGeom, E = state.edit;
+  const z = Math.min(1, Math.max(MIN_ZOOM, zoom)), cw = g.max.cw * z, ch = g.max.ch * z, rw = g.crop.rw, rh = g.crop.rh;
+  E.zoom = +z.toFixed(4);
+  E.panX = rw > cw ? Math.min(1, Math.max(0, x / (rw - cw))) : 0.5;
+  E.panY = rh > ch ? Math.min(1, Math.max(0, y / (rh - ch))) : 0.5;
+  $('zoom').value = String(E.zoom);
+  $('panX').value = String(E.panX);
+  $('panY').value = String(E.panY);
+  updateEditUi();
+}
+function zoomAroundCenter(z) {
+  const { crop, max } = previewGeom, nz = Math.min(1, Math.max(MIN_ZOOM, z));
+  const cx = crop.x + crop.cw / 2, cy = crop.y + crop.ch / 2;
+  setCropBox(cx - (max.cw * nz) / 2, cy - (max.ch * nz) / 2, nz);
+}
 {
-  const c = $('editPreview');
+  const c = $('editPreview'), pts = new Map();
   let drag = null;
+  const toFrame = (e) => { // CSS 像素 → 畫面像素
+    const r = c.getBoundingClientRect(), k = c.width / r.width / previewGeom.s;
+    return { x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k, k };
+  };
   c.addEventListener('pointerdown', (e) => {
     if (!previewGeom) return;
-    const { crop } = previewGeom;
-    drag = { x: e.clientX, y: e.clientY, cx: crop.x, cy: crop.y, crop };
-    c.setPointerCapture(e.pointerId);
+    try { c.setPointerCapture(e.pointerId); } catch { /* 合成事件或已釋放的指標 */ }
     e.preventDefault();
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const { crop } = previewGeom, p = toFrame(e);
+    if (pts.size === 2) { // 雙指捏合
+      const [a, b] = [...pts.values()];
+      drag = { mode: 'pinch', d0: Math.hypot(a.x - b.x, a.y - b.y), z0: state.edit.zoom };
+      return;
+    }
+    const tol = 16 * p.k; // 角落 16 個 CSS 像素內 = 縮放
+    const corners = [[crop.x, crop.y], [crop.x + crop.cw, crop.y], [crop.x, crop.y + crop.ch], [crop.x + crop.cw, crop.y + crop.ch]];
+    const hit = corners.findIndex(([cx, cy]) => Math.abs(p.x - cx) < tol && Math.abs(p.y - cy) < tol);
+    if (hit >= 0) {
+      const [ax, ay] = corners[3 - hit]; // 對角固定
+      drag = { mode: 'resize', ax, ay };
+    } else drag = { mode: 'move', x: e.clientX, y: e.clientY, cx: crop.x, cy: crop.y, k: p.k };
   });
   c.addEventListener('pointermove', (e) => {
-    if (!drag) return;
-    const r = c.getBoundingClientRect(), k = c.width / r.width / previewGeom.s; // CSS 像素 → 畫面像素
-    const { crop } = drag, E = state.edit;
-    if (crop.rw > crop.cw) E.panX = Math.min(1, Math.max(0, (drag.cx + (e.clientX - drag.x) * k) / (crop.rw - crop.cw)));
-    if (crop.rh > crop.ch) E.panY = Math.min(1, Math.max(0, (drag.cy + (e.clientY - drag.y) * k) / (crop.rh - crop.ch)));
-    $('panX').value = String(E.panX);
-    $('panY').value = String(E.panY);
-    updateEditUi();
+    if (!drag || !pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const { max, crop } = previewGeom;
+    if (drag.mode === 'pinch' && pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      zoomAroundCenter(drag.z0 * (Math.hypot(a.x - b.x, a.y - b.y) / Math.max(1, drag.d0)));
+    } else if (drag.mode === 'resize') {
+      const p = toFrame(e);
+      const z = Math.min(1, Math.max(MIN_ZOOM, Math.abs(p.x - drag.ax) / max.cw, Math.abs(p.y - drag.ay) / max.ch));
+      const cw = max.cw * z, ch = max.ch * z;
+      const x = Math.min(crop.rw - cw, Math.max(0, p.x < drag.ax ? drag.ax - cw : drag.ax));
+      const y = Math.min(crop.rh - ch, Math.max(0, p.y < drag.ay ? drag.ay - ch : drag.ay));
+      setCropBox(x, y, z);
+    } else if (drag.mode === 'move') {
+      setCropBox(drag.cx + (e.clientX - drag.x) * drag.k, drag.cy + (e.clientY - drag.y) * drag.k, state.edit.zoom);
+    }
   });
-  const end = () => { drag = null; };
+  const end = (e) => {
+    pts.delete(e.pointerId);
+    if (drag && drag.mode === 'pinch' && pts.size === 1) { // 放開一指 → 繼續用剩下那指移動
+      const [q] = [...pts.values()], { crop } = previewGeom;
+      drag = { mode: 'move', x: q.x, y: q.y, cx: crop.x, cy: crop.y, k: toFrame({ clientX: q.x, clientY: q.y }).k };
+    } else if (!pts.size) drag = null;
+  };
   c.addEventListener('pointerup', end);
   c.addEventListener('pointercancel', end);
+  c.addEventListener('wheel', (e) => {
+    if (!previewGeom) return;
+    e.preventDefault();
+    zoomAroundCenter(state.edit.zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08));
+  }, { passive: false });
 }
+
+// 時間軸下方的時間裁切把手：拖動「開始／結束」，影片同時跳到那一格方便對準
+function drawTrimTrack() {
+  const E = state.edit, D = duration() || 1, tr = $('trimTrack');
+  tr.hidden = !state.src || state.src.kind !== 'video' || E.trim.mode === 'none';
+  if (tr.hidden) return;
+  const a = Math.min(E.trim.start, E.trim.end) / D, b = Math.max(E.trim.start, E.trim.end) / D;
+  $('thStart').style.left = `${(E.trim.start / D) * 100}%`;
+  $('thEnd').style.left = `${(E.trim.end / D) * 100}%`;
+  const sel = $('trimSel');
+  sel.style.left = `${a * 100}%`;
+  sel.style.width = `${(b - a) * 100}%`;
+  tr.classList.toggle('cut', E.trim.mode === 'cut');
+  $('trimLabel').textContent = `${E.trim.mode === 'cut' ? '刪除' : '保留'} ${fmtSec(Math.min(E.trim.start, E.trim.end))} – ${fmtSec(Math.max(E.trim.start, E.trim.end))}`;
+}
+for (const [id, key] of [['thStart', 'start'], ['thEnd', 'end']]) {
+  const h = $(id);
+  let on = false;
+  const move = (e) => {
+    const r = $('trimTrack').querySelector('.trimrail').getBoundingClientRect();
+    const t = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * duration();
+    state.edit.trim[key] = +t.toFixed(2);
+    $(key === 'start' ? 'trimStart' : 'trimEnd').value = t.toFixed(1);
+    if (state.playing) pause();
+    if (state.src?.kind === 'video') video.currentTime = t; // 預覽這一格
+    updateEditUi();
+  };
+  h.addEventListener('pointerdown', (e) => { on = true; try { h.setPointerCapture(e.pointerId); } catch { /* 同上 */ } e.preventDefault(); move(e); });
+  h.addEventListener('pointermove', (e) => { if (on) move(e); });
+  h.addEventListener('pointerup', () => { on = false; });
+  h.addEventListener('pointercancel', () => { on = false; });
+  h.addEventListener('keydown', (e) => { // 鍵盤：左右鍵 0.1 秒
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const t = Math.min(duration(), Math.max(0, state.edit.trim[key] + (e.key === 'ArrowRight' ? 0.1 : -0.1)));
+    state.edit.trim[key] = +t.toFixed(2);
+    $(key === 'start' ? 'trimStart' : 'trimEnd').value = t.toFixed(1);
+    if (state.src?.kind === 'video') video.currentTime = t;
+    updateEditUi();
+  });
+}
+
 $('rotL').onclick = () => { state.edit.rot = (state.edit.rot + 270) % 360; syncEditUi(); };
 $('rotR').onclick = () => { state.edit.rot = (state.edit.rot + 90) % 360; syncEditUi(); };
 for (const id of ['aspect', 'audioMode', 'trimMode']) $(id).addEventListener('change', readEditUi);
-for (const id of ['panX', 'panY', 'speed', 'trimStart', 'trimEnd']) $(id).addEventListener('input', readEditUi);
+for (const id of ['panX', 'panY', 'zoom', 'speed', 'trimStart', 'trimEnd']) $(id).addEventListener('input', readEditUi);
 $('trimStartNow').onclick = () => { $('trimStart').value = current().toFixed(1); readEditUi(); };
 $('trimEndNow').onclick = () => { $('trimEnd').value = current().toFixed(1); readEditUi(); };
 $('editReset').onclick = resetEdit;
@@ -1404,10 +1504,10 @@ async function exportEdited() {
   const t0 = await vt.getFirstTimestamp(), D = (await vt.computeDuration()) - t0;
   const segs = keepSegments(D, E.trim), speed = E.speed, total = outDuration(segs, speed);
   const { w, h } = state.src;
-  const full = cropRect(w, h, E.rot, E.aspect, E.panX, E.panY);
+  const full = cropRect(w, h, E.rot, E.aspect, E.panX, E.panY, E.zoom);
   const [ow, oh] = outSize(full.cw, full.ch);
   const k = Math.min(1, ow / full.cw); // 調色在「剛好夠裁出輸出尺寸」的解析度上做
-  const pw = even(w * k), ph = even(h * k), crop = cropRect(pw, ph, E.rot, E.aspect, E.panX, E.panY);
+  const pw = even(w * k), ph = even(h * k), crop = cropRect(pw, ph, E.rot, E.aspect, E.panX, E.panY, E.zoom);
   const col = await buildColorizer(pw, ph, () => canceled, segs);
   let output = null;
   try {

@@ -55,6 +55,12 @@
         <button class="icon" id="mute" type="button" aria-label="關閉聲音" title="聲音" disabled>🔊</button>
         <div class="seekwrap"><input type="range" id="seek" min="0" max="1000" value="0" disabled aria-label="時間軸"><div class="trimbar" id="trimBar" hidden></div></div>
         <span class="time" id="time">0:00 / 0:00</span>
+        <div class="trimtrack" id="trimTrack" hidden>
+          <div class="trimrail"><div class="trimsel" id="trimSel"></div>
+            <button class="th" id="thStart" type="button" aria-label="時間裁切開始（拖曳或左右鍵）"></button>
+            <button class="th end" id="thEnd" type="button" aria-label="時間裁切結束（拖曳或左右鍵）"></button></div>
+          <span class="triml" id="trimLabel"></span>
+        </div>
         <div class="seg" role="tablist" aria-label="檢視方式">
           <button type="button" data-view="split" class="on">分割</button>
           <button type="button" data-view="result">結果</button>
@@ -102,10 +108,11 @@
           <div class="ctl"><label>旋轉 <output id="rotV">0°</output></label>
             <div class="row"><button class="btn" id="rotL" type="button">⟲ 左轉 90°</button><button class="btn" id="rotR" type="button">⟳ 右轉 90°</button></div></div>
           <div class="ctl"><label for="aspect">裁切比例</label><select id="aspect"></select></div>
+          <div class="ctl"><label for="zoom">縮放（裁切框大小） <output id="zoomV"></output></label><input type="range" id="zoom" min="0.2" max="1" step="0.01" value="1"></div>
           <div class="ctl" id="panXc"><label for="panX">水平位置 <output id="panXV"></output></label><input type="range" id="panX" min="0" max="1" step="0.01" value="0.5"></div>
           <div class="ctl" id="panYc"><label for="panY">垂直位置 <output id="panYV"></output></label><input type="range" id="panY" min="0" max="1" step="0.01" value="0.5"></div>
           <canvas id="editPreview" class="editprev" width="320" height="180" aria-label="裁切預覽：拖曳框可移動裁切位置"></canvas>
-          <p class="note center">白框 = 匯出範圍，直接拖曳可移動（暫停時的畫面）</p>
+          <p class="note center">白框 = 匯出範圍：拖框內移動、拖四角依比例縮放，也可雙指捏合或滾輪縮放（暫停時的畫面）</p>
           <div class="vidonly">
             <div class="ctl"><label for="speed">速度 <output id="speedV"></output></label><input type="range" id="speed" min="0.25" max="4" step="0.25" value="1"></div>
             <div class="ctl"><label for="audioMode">聲音</label>

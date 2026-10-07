@@ -99,3 +99,13 @@ test('時間裁切後只在保留區段排關鍵幀', async () => {
   assert.deepEqual(keyframeTimesIn([[2, 5]], 0.5), [2, 2.5, 3, 3.5, 4, 4.5, 5]); // 60 秒片只保留 3 秒：7 個而不是 121 個
   assert.deepEqual(keyframeTimesIn([[0, 1], [4, 5]], 1), [0, 1, 4, 5]);
 });
+
+test('裁切框依比例縮放', async () => {
+  const E = await import('../lib/edit.js');
+  const c = E.cropRect(1920, 1080, 0, '9:16', 0, 1, 0.5); // 一半大小、貼齊左下
+  assert.deepEqual([c.cw, c.ch, c.x, c.y], [304, 540, 0, 540]);
+  assert.equal(E.cropRect(1920, 1080, 0, 'orig', 0.5, 0.5, 0.5).cw, 960); // 原始比例也能縮放
+  assert.equal(E.cropRect(1920, 1080, 0, 'orig', 0.5, 0.5, 0.01).cw, 384); // 最小 20%
+  assert.ok(E.cropActive({ ...E.DEFAULT_EDIT, zoom: 0.8 }));
+  assert.ok(!E.cropActive(E.DEFAULT_EDIT));
+});

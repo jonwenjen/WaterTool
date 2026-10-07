@@ -99,6 +99,62 @@ const drag = async (dx) => {
 const l = await drag(-box.width), r = await drag(box.width), m = await drag(-box.width * 0.2);
 ok(l.panX === 0 && r.panX === 1 && m.panX > 0.2 && m.panX < 0.9 && Math.abs(m.slider - m.panX) <= 0.005, `拖曳裁切框：往左到底 ${l.panX}、往右到底 ${r.panX}、往回一點 ${m.panX.toFixed(2)}（滑桿同步）`);
 
+// 4c. 拖右下角往中間 → 依比例縮小（比例不變、左上角不動）；滾輪放大；縮放後匯出尺寸跟著變
+await page.click('#editReset');
+await page.selectOption('#aspect', '9:16');
+await page.waitForTimeout(200);
+await page.locator('#editPreview').scrollIntoViewIfNeeded();
+const b2 = await page.locator('#editPreview').boundingBox();
+const before = await page.evaluate(() => ({ ...window.__watertool.state.edit }));
+const g = await page.evaluate(() => { const c = document.getElementById('editPreview'), r = c.getBoundingClientRect(); return { k: r.width / c.width }; });
+// 預覽 320×180、9:16 置中的框：寬 101、高 180 → 右下角在 (219.5, 180)（畫布像素）
+const corner = { x: b2.x + (160 + 101 / 2) * g.k - 2, y: b2.y + 180 * g.k - 2 };
+await page.mouse.move(corner.x, corner.y);
+await page.mouse.down();
+await page.mouse.move(corner.x - 50 * g.k, corner.y - 90 * g.k, { steps: 5 });
+await page.mouse.up();
+const after = await page.evaluate(() => {
+  const E = window.__watertool.state.edit;
+  return { zoom: E.zoom, slider: +document.getElementById('zoom').value };
+});
+ok(after.zoom > 0.45 && after.zoom < 0.55 && Math.abs(after.slider - after.zoom) <= 0.005, `拖右下角往內 → 裁切框縮成 ${Math.round(after.zoom * 100)}%（約 50%，滑桿同步）`);
+await page.mouse.move(b2.x + b2.width / 2, b2.y + b2.height / 2);
+for (let i = 0; i < 3; i++) await page.mouse.wheel(0, -100);
+const z2 = await page.evaluate(() => window.__watertool.state.edit.zoom);
+ok(z2 > after.zoom + 0.1, `滑鼠滾輪放大框：${Math.round(after.zoom * 100)}% → ${Math.round(z2 * 100)}%`);
+// 雙指捏合（合成兩個觸控指標）：兩指距離變 1.5 倍 → 框放大約 1.5 倍
+await setVal('zoom', 0.4);
+const pinch = await page.evaluate(() => {
+  const c = document.getElementById('editPreview'), r = c.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  const ev = (type, id, x, y) => c.dispatchEvent(new PointerEvent(type, { pointerId: id, clientX: x, clientY: y, pointerType: 'touch', bubbles: true, cancelable: true }));
+  const z0 = window.__watertool.state.edit.zoom;
+  ev('pointerdown', 11, cx - 40, cy); ev('pointerdown', 12, cx + 40, cy);
+  ev('pointermove', 12, cx + 80, cy); // 距離 80 → 120
+  ev('pointerup', 11, cx - 40, cy); ev('pointerup', 12, cx + 80, cy);
+  return { z0, z1: window.__watertool.state.edit.zoom };
+});
+ok(Math.abs(pinch.z1 / pinch.z0 - 1.5) < 0.05, `雙指捏合：兩指距離 ×1.5 → 框 ${Math.round(pinch.z0 * 100)}% → ${Math.round(pinch.z1 * 100)}%`);
+await setVal('zoom', 0.5);
+await setVal('mix', 0);
+await page.selectOption('#outRes', '0');
+const fz = await exportTo('zoom');
+const [wz, hz] = probe(fz, 'v:0', 'stream=width,height').split(',').map(Number);
+ok(Math.abs(wz - 100) <= 2 && hz === 180, `9:16 + 縮放 50% → ${wz}×${hz}（最大框 202×360 的一半）`);
+await setVal('mix', 1);
+
+// 4d. 時間裁切把手：拖「開始」到 25% → 開始時間 ≈ 片長 × 25%，影片跳到那一格
+await page.click('#editReset');
+await page.selectOption('#trimMode', 'keep');
+await page.locator('#trimTrack').scrollIntoViewIfNeeded();
+const rail = await page.locator('#trimTrack .trimrail').boundingBox(), hs = await page.locator('#thStart').boundingBox();
+await page.mouse.move(hs.x + hs.width / 2, hs.y + hs.height / 2);
+await page.mouse.down();
+await page.mouse.move(rail.x + rail.width * 0.25, hs.y + hs.height / 2, { steps: 5 });
+await page.mouse.up();
+await page.waitForTimeout(400);
+const tr = await page.evaluate(() => ({ start: window.__watertool.state.edit.trim.start, input: +document.getElementById('trimStart').value, t: document.getElementById('video').currentTime, label: document.getElementById('trimLabel').textContent }));
+ok(Math.abs(tr.start - srcDur * 0.25) < 0.3 && Math.abs(tr.t - tr.start) < 0.1 && Math.abs(tr.input - tr.start) < 0.06, `拖曳時間把手：開始 ${tr.start.toFixed(2)} 秒（片長 25% ≈ ${(srcDur * 0.25).toFixed(2)}），影片跳到 ${tr.t.toFixed(2)} 秒，顯示「${tr.label}」`);
+
 // 5. 逐格完整計算 + 4× + 1:1
 await page.click('#editReset');
 await page.selectOption('#netExp', '0');
