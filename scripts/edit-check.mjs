@@ -162,13 +162,15 @@ await setVal('trimStart', 1);
 await setVal('trimEnd', 3);
 await page.evaluate(() => new Promise((ok) => { const v = document.getElementById('video'); v.addEventListener('seeked', ok, { once: true }); v.currentTime = 2; }));
 await page.click('#trimFollow button[data-follow="end"]');
-const q0 = await page.evaluate(() => window.__watertool.state.edit.trim.end);
+await page.waitForTimeout(300);
+const q0 = await page.evaluate(() => ({ end: window.__watertool.state.edit.trim.end, t: document.getElementById('video').currentTime }));
 await page.click('#play');
 await page.waitForTimeout(2000);
 await page.click('#play'); // 暫停
 await page.waitForTimeout(300);
 const q1 = await page.evaluate(() => ({ end: window.__watertool.state.edit.trim.end, t: document.getElementById('video').currentTime, input: +document.getElementById('trimEnd').value, playing: window.__watertool.state.playing }));
-ok(Math.abs(q0 - 2) < 0.05 && q1.end > 3.2 && Math.abs(q1.end - q1.t) < 0.1 && Math.abs(q1.input - q1.end) < 0.06, `結束跟著播放：選取時跳到 ${q0.toFixed(2)} 秒，播放後停在 ${q1.end.toFixed(2)} 秒（目前位置 ${q1.t.toFixed(2)}，沒有在原本的 3 秒停下）`);
+ok(Math.abs(q0.end - 3) < 0.05 && Math.abs(q0.t - 3) < 0.05, `選定「結束」跟隨：播放位置跳到結束點 ${q0.t.toFixed(2)} 秒，結束點不動（${q0.end.toFixed(2)}）`);
+ok(q1.end > 4.2 && Math.abs(q1.end - q1.t) < 0.1 && Math.abs(q1.input - q1.end) < 0.06, `播放 2 秒後暫停：結束點跟到 ${q1.end.toFixed(2)} 秒（目前位置 ${q1.t.toFixed(2)}），沒有在原本的 3 秒停下`);
 await page.evaluate(() => new Promise((ok) => { const v = document.getElementById('video'); v.addEventListener('seeked', ok, { once: true }); v.currentTime = 6; }));
 await page.waitForTimeout(200);
 const q2 = await page.evaluate(() => window.__watertool.state.edit.trim.end);
@@ -182,6 +184,15 @@ await page.mouse.up();
 await page.waitForTimeout(300);
 const q3 = await page.evaluate(() => ({ end: window.__watertool.state.edit.trim.end, follow: document.querySelector('#trimFollow button.on').dataset.follow }));
 ok(q3.follow === 'none' && Math.abs(q3.end - 6) < 0.05, `拖開始把手時自動停止跟隨，結束點仍在 ${q3.end.toFixed(2)} 秒`);
+// 點一下把手 = 選定跟隨（播放位置跳到那一端、把手不動）；再點一下 = 取消
+const tapHandle = async (id) => { const b = await page.locator(id).boundingBox(); await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2); await page.waitForTimeout(300); };
+const st0 = await page.evaluate(() => window.__watertool.state.edit.trim.start);
+await tapHandle('#thStart');
+const tap1 = await page.evaluate(() => ({ follow: document.querySelector('#trimFollow button.on').dataset.follow, glow: document.getElementById('thStart').classList.contains('follow'), start: window.__watertool.state.edit.trim.start, t: document.getElementById('video').currentTime }));
+await tapHandle('#thStart');
+const tap2 = await page.evaluate(() => document.querySelector('#trimFollow button.on').dataset.follow);
+ok(tap1.follow === 'start' && tap1.glow && Math.abs(tap1.start - st0) < 0.05 && Math.abs(tap1.t - st0) < 0.05 && tap2 === 'none',
+  `點一下開始把手 → 跟隨開始（把手不動、播放位置跳到 ${tap1.t.toFixed(2)} 秒）；再點一下 → 取消`);
 
 // 5. 逐格完整計算 + 4× + 1:1
 await page.click('#editReset');

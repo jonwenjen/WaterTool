@@ -1332,7 +1332,10 @@ function setTrimFollow(f) {
   for (const b of document.querySelectorAll('#trimFollow button')) b.classList.toggle('on', b.dataset.follow === trimFollow);
   $('thStart').classList.toggle('follow', trimFollow === 'start');
   $('thEnd').classList.toggle('follow', trimFollow === 'end');
-  followTrim(true);
+  $('thStart').setAttribute('aria-pressed', String(trimFollow === 'start'));
+  $('thEnd').setAttribute('aria-pressed', String(trimFollow === 'end'));
+  // 選定後播放位置先跳到那一端（把手不動），之後播放或拖時間軸，那一端就從原本的位置跟著走
+  if (trimFollow !== 'none' && state.src?.kind === 'video') video.currentTime = state.edit.trim[trimFollow];
 }
 function followTrim(now = false) {
   if (trimFollow === 'none' || !state.src || state.src.kind !== 'video' || state.edit.trim.mode === 'none') return;
@@ -1476,9 +1479,10 @@ function drawTrimTrack() {
   tr.classList.toggle('cut', E.trim.mode === 'cut');
   $('trimLabel').textContent = `${E.trim.mode === 'cut' ? '刪除' : '保留'} ${fmtSec(Math.min(E.trim.start, E.trim.end))} – ${fmtSec(Math.max(E.trim.start, E.trim.end))}`;
 }
+// 把手：點一下 = 選定這一端跟著播放（再點一下取消）；拖動 = 手動調整（並停止跟隨）
 for (const [id, key] of [['thStart', 'start'], ['thEnd', 'end']]) {
   const h = $(id);
-  let on = false;
+  let down = null; // { x, drag }
   const move = (e) => {
     const r = $('trimTrack').querySelector('.trimrail').getBoundingClientRect();
     const t = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * duration();
@@ -1488,17 +1492,28 @@ for (const [id, key] of [['thStart', 'start'], ['thEnd', 'end']]) {
     if (state.src?.kind === 'video') video.currentTime = t; // 預覽這一格
     updateEditUi();
   };
+  const toggleFollow = () => setTrimFollow(trimFollow === key ? 'none' : key);
   h.addEventListener('pointerdown', (e) => {
-    on = true;
-    if (trimFollow !== 'none') setTrimFollow('none'); // 手動拖把手：停止跟著播放（不然另一端會被拉到這裡）
+    down = { x: e.clientX, drag: false };
     try { h.setPointerCapture(e.pointerId); } catch { /* 合成事件或已釋放的指標 */ }
     e.preventDefault();
+  });
+  h.addEventListener('pointermove', (e) => {
+    if (!down) return;
+    if (!down.drag) {
+      if (Math.abs(e.clientX - down.x) < 5) return; // 手指微動仍算「點一下」
+      down.drag = true;
+      if (trimFollow !== 'none') setTrimFollow('none'); // 手動拖把手：停止跟著播放（不然另一端會被拉到這裡）
+    }
     move(e);
   });
-  h.addEventListener('pointermove', (e) => { if (on) move(e); });
-  h.addEventListener('pointerup', () => { on = false; });
-  h.addEventListener('pointercancel', () => { on = false; });
-  h.addEventListener('keydown', (e) => { // 鍵盤：左右鍵 0.1 秒
+  h.addEventListener('pointerup', () => {
+    if (down && !down.drag) toggleFollow();
+    down = null;
+  });
+  h.addEventListener('pointercancel', () => { down = null; });
+  h.addEventListener('keydown', (e) => { // 鍵盤：左右鍵 0.1 秒；Enter／空白鍵 = 選定跟隨
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFollow(); return; }
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
     const t = Math.min(duration(), Math.max(0, state.edit.trim[key] + (e.key === 'ArrowRight' ? 0.1 : -0.1)));

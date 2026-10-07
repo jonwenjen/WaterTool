@@ -57,8 +57,8 @@
         <span class="time" id="time">0:00 / 0:00</span>
         <div class="trimtrack" id="trimTrack" hidden>
           <div class="trimrail"><div class="trimsel" id="trimSel"></div>
-            <button class="th" id="thStart" type="button" aria-label="時間裁切開始（拖曳或左右鍵）"></button>
-            <button class="th end" id="thEnd" type="button" aria-label="時間裁切結束（拖曳或左右鍵）"></button></div>
+            <button class="th" id="thStart" type="button" aria-label="時間裁切開始：拖曳調整、左右鍵微調，點一下選定跟著播放" aria-pressed="false"></button>
+            <button class="th end" id="thEnd" type="button" aria-label="時間裁切結束：拖曳調整、左右鍵微調，點一下選定跟著播放" aria-pressed="false"></button></div>
           <span class="triml" id="trimLabel"></span>
         </div>
         <div class="seg" role="tablist" aria-label="檢視方式">
@@ -127,7 +127,7 @@
                 <button type="button" data-follow="start">開始跟著播放</button>
                 <button type="button" data-follow="end">結束跟著播放</button>
               </div>
-              <p class="note follownote">選「開始」或「結束」後播放或拖時間軸，那一端會跟著目前位置走，看到想要的地方按暫停就定住。</p>
+              <p class="note follownote">點時間軸上的開始／結束把手（或這裡的按鈕）選定一端，播放位置會先跳到那裡；之後播放或拖時間軸，那一端就跟著走，看到想要的地方按暫停就定住。拖動把手則是手動調整。</p>
             </div>
           </div>
           <p class="note" id="editSummary"></p>
