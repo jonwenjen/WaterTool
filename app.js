@@ -258,9 +258,10 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
   }
   // 影片：用 Mediabunny（WebCodecs）直接解出關鍵幀 —— 不必播放、不必跳轉 <video>。
   // 手機瀏覽器常常不替看不見的 <video> 載入資料（loadeddata 永遠不來），以前會一直停在「分析關鍵幀」。
+  let input = null;
   try {
     const MB = await loadMediabunny();
-    const input = new MB.Input({ source: new MB.BlobSource(src.file), formats: MB.ALL_FORMATS });
+    input = openInput(MB, src.file);
     const vt = await input.getPrimaryVideoTrack();
     if (!vt || !(await vt.canDecode())) throw new Error('無法解碼');
     const t0 = await vt.getFirstTimestamp(), D = (await vt.computeDuration()) - t0;
@@ -290,7 +291,10 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
   } catch (err) {
     if (stale()) return keys;
     console.warn('Mediabunny 取關鍵幀失敗，改用 <video> 跳轉：', err);
+    if (isReadError(err)) blobStream = false; // 之後的讀檔（含匯出）改用分段讀
     keys.length = 0;
+  } finally {
+    closeInput(input);
   }
   // 備援：看不見的 <video> 逐一跳轉（每一步都有逾時，不會無限等待）
   const kv = document.createElement('video');
@@ -1042,6 +1046,22 @@ function download(blob, name) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
 }
+// 讀原片：Mediabunny 預設用 blob.stream() 分段讀，每個 Input 用完都要 dispose（否則讀檔串流一直開著）。
+// Android Chrome 讀相簿檔案的串流偶爾會失敗（TypeError: network error，第二次匯出特別常見）→ 之後改用較慢但穩定的 arrayBuffer 分段讀
+let blobStream = true;
+const openInputs = new Set();
+function openInput(MB, file) {
+  const input = new MB.Input({ source: new MB.BlobSource(file, { useStreamReader: blobStream }), formats: MB.ALL_FORMATS });
+  openInputs.add(input);
+  return input;
+}
+function closeInput(input) {
+  if (!input) return;
+  openInputs.delete(input);
+  try { input.dispose(); } catch { /* 已關閉 */ }
+}
+const isReadError = (err) => !!err && /network error|NotReadable|could not be read|NotFoundError/i.test(`${err.name} ${err.message}`);
+
 const baseName = () => (state.src.name || 'watertool').replace(/\.[^.]+$/, '') + `_${state.method}`;
 
 $('export').onclick = async () => {
@@ -1061,13 +1081,28 @@ $('export').onclick = async () => {
       if (!keyG(0)) throw new Error('關鍵幀分析未完成');
     }
     if (state.src.kind === 'image') await exportImage();
-    else if (state.src.kind === 'video') await (editActive(state.edit) ? exportEdited() : fastExport() ? exportVideoFast() : exportVideo());
-    else await exportDemo();
+    else if (state.src.kind === 'video') {
+      const run = () => (editActive(state.edit) ? exportEdited() : fastExport() ? exportVideoFast() : exportVideo());
+      try {
+        await run();
+      } catch (err) {
+        if (!isReadError(err) || !blobStream) throw err;
+        // 讀檔串流失敗：關掉所有讀檔器、改用 arrayBuffer 分段讀，再試一次
+        console.warn('讀取原片失敗，改用分段讀取重試：', err);
+        blobStream = false;
+        for (const i of [...openInputs]) closeInput(i);
+        $('exportNote').textContent = '讀取原片失敗，改用較穩定的讀法重試…';
+        prog.value = 0;
+        await run();
+      }
+    } else await exportDemo();
     $('exportNote').textContent = `完成，用時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒。`;
   } catch (err) {
     if (err && err.name === 'ConversionCanceledError') $('exportNote').textContent = '已取消。';
+    else if (isReadError(err)) showError('匯出失敗：手機無法再讀取原片（' + err.message + '）。請按「開啟影片／照片」重新選一次這支影片再匯出。');
     else showError('匯出失敗：' + err.message);
   } finally {
+    for (const i of [...openInputs]) closeInput(i); // 這次匯出開的讀檔器全部關掉
     $('export').disabled = false;
     $('cancel').hidden = true;
     prog.hidden = true;
@@ -1121,7 +1156,7 @@ async function exportVideo() {
   const MB = await loadMediabunny();
   const { w, h } = state.src;
   const [ow, oh] = outSize(w, h);
-  const input = new MB.Input({ source: new MB.BlobSource(state.src.file), formats: MB.ALL_FORMATS });
+  const input = openInput(MB, state.src.file);
   const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
   const codec = await MB.getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: ow, height: oh });
   if (!codec) throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`);
@@ -1240,7 +1275,7 @@ async function exportVideoFast() {
   if (canceled) { col.dispose(); throw Object.assign(new Error('canceled'), { name: 'ConversionCanceledError' }); }
   const tKeys = (performance.now() - t0) / 1000;
   const MB = await loadMediabunny();
-  const input = new MB.Input({ source: new MB.BlobSource(state.src.file), formats: MB.ALL_FORMATS });
+  const input = openInput(MB, state.src.file);
   const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
   const codec = await MB.getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: ow, height: oh });
   if (!codec) { col.dispose(); throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`); }
@@ -1586,7 +1621,7 @@ async function exportEdited() {
   let canceled = false;
   cancelExport = () => { canceled = true; };
   const cancelErr = () => Object.assign(new Error('canceled'), { name: 'ConversionCanceledError' });
-  const input = new MB.Input({ source: new MB.BlobSource(state.src.file), formats: MB.ALL_FORMATS });
+  const input = openInput(MB, state.src.file);
   const vt = await input.getPrimaryVideoTrack();
   if (!vt) throw new Error('找不到影片軌');
   const at = E.audio === 'keep' ? await input.getPrimaryAudioTrack() : null;
@@ -1802,7 +1837,7 @@ renderParams();
 renderAbout();
 placeOverlay();
 window.__watertool = { // 給自動化測試用
-  state, call, renderGL, select: (id) => selectMethod(id),
+  state, call, renderGL, select: (id) => selectMethod(id), openInputs: () => openInputs.size,
   origCanvas: () => orig,
   // 測試用：用目前（含過渡中）的色彩轉換套用一張固定畫面，量「轉換本身」的跳動
   probeGL: (src) => { if (!glActive()) return false; if (ramp) gl.setKeyMix(rampK(performance.now())); gl.draw(src, { mode: 'result' }); return true; },
