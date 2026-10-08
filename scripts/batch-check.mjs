@@ -26,6 +26,12 @@ const open = async (f) => {
   await page.waitForFunction((n) => window.__watertool.state.src?.name === n, f.split('/').pop());
   await page.waitForFunction(() => document.getElementById('busy').hidden, null, { timeout: 60000 });
 };
+const addExtras = async (files) => {
+  await page.evaluate(() => { document.getElementById('batchBox').open = true; });
+  await page.setInputFiles('#batchFiles', files);
+  // 加入後先複製到 App 自己的儲存空間（OPFS），備妥才能按
+  await page.waitForFunction(() => !document.getElementById('batchRun').disabled, null, { timeout: 120000 });
+};
 const runBatch = async (n, tag) => {
   const files = [];
   const onDl = async (d) => { const f = `/tmp/claude-batch-${tag}-${files.length}-${d.suggestedFilename()}`; files.push(f); await d.saveAs(f); };
@@ -43,8 +49,7 @@ await page.evaluate(() => window.__watertool.select('fiveaplus'));
 await page.waitForFunction(() => document.getElementById('busy').hidden && !document.getElementById('export').disabled, null, { timeout: 300000 });
 await page.selectOption('#outRes', '0');
 await page.click('#rotR');
-await page.evaluate(() => { document.getElementById('batchBox').open = true; });
-await page.setInputFiles('#batchFiles', [B, Cv]);
+await addExtras([B, Cv]);
 ok((await page.textContent('#batchRun')).includes('3 部'), `按鈕顯示「${(await page.textContent('#batchRun')).trim()}」`);
 const r1 = await runBatch(3, 'a');
 ok(r1.files.length === 3 && r1.last.every((j) => j.status === 'ok'), `3 部都完成並下載：${r1.last.map((j) => j.name + ' ' + j.status).join('、')}`);
@@ -67,6 +72,8 @@ await page.evaluate(() => window.__watertool.select('diverout'));
 await page.waitForFunction(() => document.getElementById('busy').hidden && !document.getElementById('export').disabled, null, { timeout: 300000 });
 await page.selectOption('#aspect', '1:1');
 await page.check('#batchEdit');
+ok((await page.evaluate(() => document.querySelectorAll('#batchList li').length)) === 1, '上一輪完成的影片已從清單移除（副本刪掉）');
+await addExtras([B, Cv]);
 const r2 = await runBatch(3, 'b');
 const p2 = r2.files.map(probe);
 ok(r2.last.every((j) => j.status === 'ok') && p2.every((x) => { const [w, h] = x.split(',').map(Number); return w === h; }), `勾選後其他影片也裁成 1:1：${p2.join(' | ')}`);
@@ -79,12 +86,15 @@ await page.click('#editReset');
 await page.evaluate(() => window.__watertool.select('nu2net'));
 await page.waitForFunction(() => document.getElementById('busy').hidden && !document.getElementById('export').disabled, null, { timeout: 300000 });
 await page.selectOption('#netExp', '0'); // 逐格：夠慢，來得及取消
+await addExtras([B, Cv]);
 await page.click('#batchRun');
 await page.waitForFunction(() => document.querySelector('#batchList li.run'), null, { timeout: 60000 });
 await page.waitForTimeout(1500);
 await page.click('#cancel');
 await page.waitForFunction(() => !document.getElementById('batchRun').textContent.includes('中'), null, { timeout: 300000 });
 const last3 = await page.evaluate(() => window.__watertool.state.lastBatch), name3 = await page.evaluate(() => window.__watertool.state.src.name);
+ok((await page.evaluate(() => document.querySelectorAll('#batchList li').length)) === 3, '取消的影片留在清單上可以再試');
+await page.click('#batchClear');
 ok(last3.every((j) => j.status === 'skip') && name3 === A.split('/').pop(), `取消後其餘略過：${last3.map((j) => j.status).join('、')}，回到 ${name3}`);
 const exportOn = await page.evaluate(() => !document.getElementById('export').disabled && !document.getElementById('file').disabled);
 ok(exportOn, '結束後按鈕恢復可用');
@@ -94,6 +104,7 @@ ok(exportOn, '結束後按鈕恢復可用');
 await page.selectOption('#netExp', '0.5');
 await page.evaluate(() => window.__watertool.select('fiveaplus'));
 await page.waitForFunction(() => document.getElementById('busy').hidden && !document.getElementById('export').disabled, null, { timeout: 300000 });
+await addExtras([B, Cv]);
 await page.evaluate(() => {
   const v = document.getElementById('video'), d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
   window.__failLoads = 0;
@@ -113,6 +124,44 @@ await dlC.saveAs('/tmp/claude-batch-single-C.mp4');
 await page.waitForFunction(() => !document.getElementById('export').disabled);
 const mc = meanRGB(r4.files[2]), sc = meanRGB('/tmp/claude-batch-single-C.mp4');
 ok(mc.every((v, c) => Math.abs(v - sc[c]) < 1.5), `不預覽開啟的影片，匯出結果與單獨開啟相同：${mc.map((v) => v.toFixed(1))} vs ${sc.map((v) => v.toFixed(1))}`);
+
+// 5. 模擬 Android：加入清單後過一陣子，原檔就讀不到了（播放器 Format error、讀檔 network error）
+//    → 加入時已複製到 App 的儲存空間，照樣全部完成；完成後副本刪除
+const p5 = await browser.newPage({ acceptDownloads: true });
+p5.on('pageerror', (e) => errors.push(e.message));
+await p5.addInitScript(() => {
+  window.__orig = new Set();
+  window.__dead = false;
+  document.addEventListener('change', (e) => { if (e.target.id === 'batchFiles') for (const f of e.target.files) window.__orig.add(f); }, true);
+  const slice = Blob.prototype.slice, url = URL.createObjectURL;
+  Blob.prototype.slice = function (...a) {
+    const b = slice.apply(this, a);
+    if (window.__dead && window.__orig.has(this)) {
+      b.arrayBuffer = () => Promise.reject(new TypeError('network error'));
+      b.stream = () => new ReadableStream({ pull(c) { c.error(new TypeError('network error')); } });
+    }
+    return b;
+  };
+  URL.createObjectURL = function (o) { return window.__dead && window.__orig.has(o) ? 'data:video/mp4;base64,AAAA' : url.call(this, o); };
+});
+await p5.goto(`http://localhost:${port}/`);
+await p5.setInputFiles('#file', A);
+await p5.waitForFunction(() => window.__watertool.state.src?.kind === 'video');
+await p5.waitForFunction(() => document.getElementById('busy').hidden, null, { timeout: 60000 });
+await p5.evaluate(() => { document.getElementById('batchBox').open = true; });
+await p5.setInputFiles('#batchFiles', [B, Cv]);
+await p5.waitForFunction(() => !document.getElementById('batchRun').disabled, null, { timeout: 120000 });
+const ready5 = await p5.evaluate(() => [...document.querySelectorAll('#batchList .st')].map((e) => e.textContent).join(' / '));
+await p5.evaluate(() => { window.__dead = true; });
+const dl5 = [];
+p5.on('download', (d) => dl5.push(d));
+await p5.click('#batchRun');
+await p5.waitForFunction(() => !document.getElementById('batchRun').textContent.includes('中'), null, { timeout: 900000 });
+await p5.waitForTimeout(500);
+const last5 = await p5.evaluate(() => window.__watertool.state.lastBatch);
+ok(last5.every((j) => j.status === 'ok') && dl5.length === 3, `原檔讀不到時仍全部完成（加入時已備妥：${ready5}）：${last5.map((j) => j.status + (j.msg ? '（' + j.msg + '）' : '')).join('、')}`);
+const left = await p5.evaluate(async () => { const r = await navigator.storage.getDirectory(); try { const d = await r.getDirectoryHandle('batch'); let n = 0; for await (const _ of d.keys()) n++; return n; } catch { return 0; } });
+ok(left === 0, `完成後副本已刪除（剩 ${left} 個）`);
 ok(errors.length === 0, `沒有頁面錯誤 ${errors.join(' | ')}`);
 await browser.close(); server.close();
 process.exit(fails ? 1 : 0);

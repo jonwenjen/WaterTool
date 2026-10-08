@@ -1198,56 +1198,119 @@ $('export').onclick = async () => {
 // ---------------- 多部匯出 ----------------
 // 目前的影片＋另外選的影片，用同一組方法、參數與輸出設定一部一部匯出。每部影片各自開啟、各自分析關鍵幀與計算顏色
 // （等於自動幫你「開啟 → 匯出」），完成後回到原本的影片與剪輯設定。
-let batchFiles = []; // 另外選的檔案
-let batchJobs = null; // 匯出中：[{ file, current, status, msg }]
-let batchRunning = false, batchCanceled = false;
+//
+// 手機（Android）上另外選的影片，過一陣子 App 就讀不到了（播放器 Format error、讀檔 network error）：
+// 讀取權限只在選完後的短時間內有效。所以一加入清單就趁還讀得到，把影片複製到 App 自己的儲存空間（OPFS），
+// 匯出時讀這份副本；匯出完成就刪掉。
+let batchFiles = []; // [{ id, file: 原檔, local: 副本（File）| null, copy: 'copying'|'ready'|'direct'|'fail', pct, err }]
+let batchJobs = null; // 匯出中：[{ file, name, current, status, msg, entry }]
+let batchRunning = false, batchCanceled = false, batchSeq = 0;
 const BATCH_STATUS = { wait: '等待中', run: '匯出中…', ok: '✓ 完成', fail: '✗ 失敗', skip: '已取消' };
+const opfsDir = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('batch', { create: true });
+// 上次沒清掉的副本（App 被關掉等）
+if (navigator.storage && navigator.storage.getDirectory) navigator.storage.getDirectory().then((r) => r.removeEntry('batch', { recursive: true })).catch(() => {});
+async function dropCopy(entry) {
+  if (!entry.local) return;
+  entry.local = null;
+  try { await (await opfsDir()).removeEntry(entry.id); } catch { /* 已刪 */ }
+}
+/** 把選到的影片分段複製到 OPFS（分段讀 arrayBuffer，比串流穩定） */
+async function copyEntry(entry) {
+  const f = entry.file;
+  try {
+    if (!(navigator.storage && navigator.storage.getDirectory)) { entry.copy = 'direct'; return; }
+    const est = await navigator.storage.estimate().catch(() => null);
+    if (est && est.quota && est.quota - est.usage < f.size + 64 * 2 ** 20) throw new Error(`App 可用的儲存空間不足（需要 ${(f.size / 2 ** 20).toFixed(0)} MB）`);
+    const fh = await (await opfsDir()).getFileHandle(entry.id, { create: true });
+    const w = await fh.createWritable();
+    try {
+      const CH = 8 * 2 ** 20;
+      for (let o = 0; o < f.size; o += CH) {
+        if (!batchFiles.includes(entry)) throw new Error('removed');
+        await w.write(new Uint8Array(await f.slice(o, Math.min(f.size, o + CH)).arrayBuffer()));
+        entry.pct = Math.min(1, (o + CH) / f.size);
+        renderBatch();
+      }
+      await w.close();
+    } catch (err) {
+      await w.abort().catch(() => {});
+      throw err;
+    }
+    const raw = await fh.getFile();
+    if (raw.size !== f.size) throw new Error('複製不完整');
+    entry.local = new File([raw], f.name, { type: f.type || 'video/mp4', lastModified: f.lastModified });
+    entry.copy = 'ready';
+  } catch (err) {
+    if (err.message === 'removed') { await (await opfsDir()).removeEntry(entry.id).catch(() => {}); return; }
+    entry.copy = 'fail';
+    entry.err = isReadError(err) ? '手機不讓 App 讀取這個檔案，請重新加入一次' : err.message;
+    await (await opfsDir().catch(() => null))?.removeEntry(entry.id).catch(() => {});
+  } finally {
+    renderBatch();
+  }
+}
+let copyQueue = Promise.resolve();
 function renderBatch() {
   const list = $('batchList');
   const cur = state.src && state.src.file && state.src.kind !== 'demo' ? state.src.file : null;
-  const rows = batchJobs || [...(cur ? [{ file: cur, current: true }] : []), ...batchFiles.map((file) => ({ file }))];
+  const rows = batchJobs || [...(cur ? [{ file: cur, name: cur.name, current: true }] : []), ...batchFiles.map((entry) => ({ file: entry.file, name: entry.file.name, entry }))];
   list.innerHTML = '';
   for (const r of rows) {
     const li = document.createElement('li');
-    if (r.status) li.className = r.status;
+    const e = r.entry;
+    li.className = r.status || (e && e.copy === 'fail' ? 'fail' : e && e.copy === 'copying' ? 'run' : '');
     const name = document.createElement('span');
     name.className = 'name';
-    name.textContent = (r.current ? '目前：' : '') + r.file.name;
+    name.textContent = (r.current ? '目前：' : '') + r.name;
     const st = document.createElement('span');
     st.className = 'st';
-    st.textContent = r.status ? BATCH_STATUS[r.status] + (r.msg ? '：' + r.msg : '') : `${(r.file.size / 2 ** 20).toFixed(1)} MB`;
+    const size = `${(r.file.size / 2 ** 20).toFixed(1)} MB`;
+    st.textContent = r.status ? BATCH_STATUS[r.status] + (r.msg ? '：' + r.msg : '')
+      : !e ? size
+      : e.copy === 'copying' ? `準備中 ${Math.round((e.pct || 0) * 100)}%`
+      : e.copy === 'fail' ? '✗ 無法讀取：' + e.err
+      : size + (e.copy === 'ready' ? ' · 已備妥' : '');
     li.append(name, st);
-    if (!r.current && !batchRunning) {
+    if (e && !batchRunning) {
       const rm = document.createElement('button');
       rm.type = 'button';
       rm.className = 'link';
       rm.textContent = '移除';
-      rm.setAttribute('aria-label', `移除 ${r.file.name}`);
-      rm.onclick = () => { batchFiles = batchFiles.filter((f) => f !== r.file); renderBatch(); };
+      rm.setAttribute('aria-label', `移除 ${r.name}`);
+      rm.onclick = () => { batchFiles = batchFiles.filter((x) => x !== e); dropCopy(e); renderBatch(); };
       li.append(rm);
     }
     list.append(li);
   }
-  const n = rows.length;
-  $('batchCount').textContent = batchFiles.length ? `（${n} 部）` : '';
-  $('batchRun').textContent = batchRunning ? '多部匯出中…' : `全部匯出（${n} 部）`;
-  $('batchRun').disabled = batchRunning || !cur || !batchFiles.length || !$('cancel').hidden;
+  const usable = batchFiles.filter((e) => e.copy === 'ready' || e.copy === 'direct').length;
+  const copying = batchFiles.some((e) => e.copy === 'copying');
+  const n = batchJobs ? batchJobs.length : (cur ? 1 : 0) + usable;
+  $('batchCount').textContent = batchFiles.length ? `（${(cur ? 1 : 0) + batchFiles.length} 部）` : '';
+  $('batchRun').textContent = batchRunning ? '多部匯出中…' : copying ? '準備影片中…' : `全部匯出（${n} 部）`;
+  $('batchRun').disabled = batchRunning || copying || !cur || !usable || !$('cancel').hidden;
 }
 $('batchFiles').addEventListener('change', (e) => {
-  const have = new Set(batchFiles.map((f) => f.name + f.size));
-  for (const f of e.target.files) if (!have.has(f.name + f.size)) { batchFiles.push(f); have.add(f.name + f.size); }
+  const have = new Set(batchFiles.map((x) => x.file.name + x.file.size));
+  for (const f of e.target.files) {
+    if (have.has(f.name + f.size)) continue;
+    have.add(f.name + f.size);
+    const entry = { id: `v${++batchSeq}`, file: f, local: null, copy: 'copying', pct: 0 };
+    batchFiles.push(entry);
+    copyQueue = copyQueue.then(() => (batchFiles.includes(entry) ? copyEntry(entry) : null));
+  }
   e.target.value = '';
   renderBatch();
 });
-$('batchClear').onclick = () => { batchFiles = []; renderBatch(); };
+$('batchClear').onclick = () => { for (const e of batchFiles) dropCopy(e); batchFiles = []; renderBatch(); };
 renderBatch();
 $('batchRun').onclick = async () => {
-  if (!state.src || !state.src.file || batchRunning || !batchFiles.length) return;
+  const ready = batchFiles.filter((e) => e.copy === 'ready' || e.copy === 'direct');
+  if (!state.src || !state.src.file || batchRunning || !ready.length) return;
   pause0();
   const orig = { file: state.src.file, edit: structuredClone(state.edit), t: state.src.kind === 'video' ? video.currentTime : 0 };
   // 其他影片要不要套用目前的旋轉、裁切比例、速度、聲音（時間裁切每部影片不同，不套用）
   const shared = () => ({ ...structuredClone(DEFAULT_EDIT), rot: orig.edit.rot, aspect: orig.edit.aspect, zoom: orig.edit.zoom, panX: orig.edit.panX, panY: orig.edit.panY, speed: orig.edit.speed, audio: orig.edit.audio });
-  batchJobs = [{ file: orig.file, current: true }, ...batchFiles.map((file) => ({ file }))];
+  batchJobs = [{ file: orig.file, name: orig.file.name, current: true }, ...ready.map((entry) => ({ file: entry.local || entry.file, name: entry.file.name, entry }))];
   for (const j of batchJobs) j.status = 'wait';
   batchRunning = true;
   batchCanceled = false;
@@ -1258,7 +1321,7 @@ $('batchRun').onclick = async () => {
       if (batchCanceled) { job.status = 'skip'; continue; }
       job.status = 'run';
       renderBatch();
-      $('batchNote').textContent = `多部匯出 ${i + 1}/${batchJobs.length}：${job.file.name}`;
+      $('batchNote').textContent = `多部匯出 ${i + 1}/${batchJobs.length}：${job.name}`;
       try {
         if (!job.current) {
           releaseVideo(); // 先放掉上一部佔用的解碼器與記憶體
@@ -1279,19 +1342,23 @@ $('batchRun').onclick = async () => {
     }
   } finally {
     // 回到原本的影片與剪輯設定
-    if (state.src?.file !== orig.file) await openFile(orig.file);
+    if (state.src?.file !== orig.file) { releaseVideo(); await openFile(orig.file); }
     if (state.src?.file === orig.file) {
       state.edit = orig.edit;
       syncEditUi();
       if (state.src.kind === 'video' && orig.t) video.currentTime = orig.t;
     }
     const ok = batchJobs.filter((j) => j.status === 'ok').length, all = batchJobs.length;
-    state.lastBatch = batchJobs.map((j) => ({ name: j.file.name, status: j.status, msg: j.msg || '' }));
+    state.lastBatch = batchJobs.map((j) => ({ name: j.name, status: j.status, msg: j.msg || '' }));
+    // 匯出完成的影片從清單移除並刪掉副本（釋放空間）；失敗或取消的留著可以再試
+    const done = new Set(batchJobs.filter((j) => j.entry && j.status === 'ok').map((j) => j.entry));
+    for (const e of done) dropCopy(e);
+    batchFiles = batchFiles.filter((e) => !done.has(e));
     batchRunning = false;
     exportUi(false);
     batchJobs = null;
     // 狀態留在清單上直到下次變動
-    $('batchNote').textContent = `多部匯出結束：${ok}/${all} 部完成` + (ok < all ? '（失敗或取消的見下方說明）' : '') + `，用時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒。`;
+    $('batchNote').textContent = `多部匯出結束：${ok}/${all} 部完成` + (ok < all ? '（失敗或取消的留在清單上，可以再按一次全部匯出）' : '') + `，用時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒。`;
     $('exportNote').textContent = state.lastBatch.filter((j) => j.status !== 'ok').map((j) => `${j.name}：${BATCH_STATUS[j.status]}${j.msg ? '（' + j.msg + '）' : ''}`).join('；');
   }
 };
