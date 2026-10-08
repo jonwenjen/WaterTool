@@ -88,6 +88,31 @@ const last3 = await page.evaluate(() => window.__watertool.state.lastBatch), nam
 ok(last3.every((j) => j.status === 'skip') && name3 === A.split('/').pop(), `取消後其餘略過：${last3.map((j) => j.status).join('、')}，回到 ${name3}`);
 const exportOn = await page.evaluate(() => !document.getElementById('export').disabled && !document.getElementById('file').disabled);
 ok(exportOn, '結束後按鈕恢復可用');
+
+// 4. 模擬手機：匯出完一部後畫面上的播放器暫時打不開下一部（第二部前兩次失敗、第三部一直失敗）
+//    → 第二部等一下重試成功；第三部改用不預覽的方式開啟（WebCodecs 讀尺寸與片長），照樣匯出
+await page.selectOption('#netExp', '0.5');
+await page.evaluate(() => window.__watertool.select('fiveaplus'));
+await page.waitForFunction(() => document.getElementById('busy').hidden && !document.getElementById('export').disabled, null, { timeout: 300000 });
+await page.evaluate(() => {
+  const v = document.getElementById('video'), d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+  window.__failLoads = 0;
+  Object.defineProperty(v, 'src', { configurable: true, get() { return d.get.call(this); }, set(u) { if (window.__failLoads > 0) { window.__failLoads--; d.set.call(this, 'data:video/mp4;base64,AAAA'); } else d.set.call(this, u); } });
+  // 第一部（目前的影片）匯出完才開始失敗：第二部失敗 2 次、第三部失敗 4 次（全部）
+  const orig = window.__watertool.state;
+  const timer = setInterval(() => { if (document.querySelector('#batchList li.ok')) { window.__failLoads = 6; clearInterval(timer); } }, 20);
+  void orig;
+});
+const r4 = await runBatch(3, 'd');
+const p4 = r4.files.map(probe);
+ok(r4.last.every((j) => j.status === 'ok') && r4.files.length === 3, `播放器暫時打不開時仍全部完成：${r4.last.map((j) => j.status + (j.msg ? '（' + j.msg + '）' : '')).join('、')}`);
+ok(p4[1] === '640,360,90' && p4[2] === '360,640,90', `重試後與不預覽開啟的影片尺寸、格數正確：${p4.slice(1).join(' | ')}`);
+await open(Cv);
+const [dlC] = await Promise.all([page.waitForEvent('download'), page.click('#export')]);
+await dlC.saveAs('/tmp/claude-batch-single-C.mp4');
+await page.waitForFunction(() => !document.getElementById('export').disabled);
+const mc = meanRGB(r4.files[2]), sc = meanRGB('/tmp/claude-batch-single-C.mp4');
+ok(mc.every((v, c) => Math.abs(v - sc[c]) < 1.5), `不預覽開啟的影片，匯出結果與單獨開啟相同：${mc.map((v) => v.toFixed(1))} vs ${sc.map((v) => v.toFixed(1))}`);
 ok(errors.length === 0, `沒有頁面錯誤 ${errors.join(' | ')}`);
 await browser.close(); server.close();
 process.exit(fails ? 1 : 0);

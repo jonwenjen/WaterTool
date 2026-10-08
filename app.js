@@ -163,6 +163,7 @@ function grab() {
   const s = state.src;
   resFresh = false;
   if (s.kind === 'image') octx.drawImage(s.bitmap, 0, 0, w, h);
+  else if (s.kind === 'video' && s.headless) { octx.fillStyle = '#000'; octx.fillRect(0, 0, w, h); } // 多部匯出時不預覽的影片
   else if (s.kind === 'video') octx.drawImage(video, 0, 0, w, h);
   else {
     demo.canvas.getContext('2d').putImageData(demo.frames[demo.idx], 0, 0);
@@ -681,7 +682,7 @@ setSound(true);
 
 function duration() {
   if (!state.src) return 0;
-  if (state.src.kind === 'video') return video.duration || 0;
+  if (state.src.kind === 'video') return state.src.headless ? state.src.duration : video.duration || 0;
   if (state.src.kind === 'demo') return demo.frames.length / demo.fps;
   return 0;
 }
@@ -718,8 +719,42 @@ video.addEventListener('seeked', () => {
 });
 
 // ---------------- 載入素材 ----------------
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+/** 放掉畫面上播放器目前的影片（連同它佔用的解碼器與記憶體） */
+function releaseVideo() {
+  if (video.src) URL.revokeObjectURL(video.src);
+  video.removeAttribute('src');
+  video.load();
+}
+const VIDEO_ERR = { 1: '中止', 2: '讀檔失敗', 3: '解碼失敗', 4: '格式不支援或無法開啟' };
+function loadVideo(file) {
+  return new Promise((ok, bad) => {
+    video.onloadeddata = ok;
+    video.onerror = () => {
+      const e = video.error;
+      bad(new Error('瀏覽器無法開啟這個影片' + (e ? `（${VIDEO_ERR[e.code] || '錯誤'} ${e.code}${e.message ? '：' + e.message : ''}）` : '')));
+    };
+    video.src = URL.createObjectURL(file);
+  });
+}
+/**
+ * 播放器打不開、但 WebCodecs（Mediabunny）能解碼時：只用 Mediabunny 讀尺寸與片長，當成「不預覽」的影片來源。
+ * 多部匯出用 —— 手機剛匯出完一部大影片時，播放器常常暫時拿不到解碼器或記憶體，但匯出本身不需要播放器。
+ */
+async function probeVideo(file) {
+  const MB = await loadMediabunny();
+  const input = openInput(MB, file, 'probe');
+  try {
+    const vt = await input.getPrimaryVideoTrack();
+    if (!vt || !(await vt.canDecode())) throw new Error('這個影片的編碼無法解碼');
+    const t0 = await vt.getFirstTimestamp();
+    return { w: vt.displayWidth, h: vt.displayHeight, duration: (await vt.computeDuration()) - t0 };
+  } finally {
+    closeInput(input);
+  }
+}
 let lastOpenError = '';
-/** 開啟素材；成功回傳 true */
+/** 開啟素材；成功回傳 true。多部匯出時播放器打不開會等一下再試，仍不行就改用不預覽的方式開啟 */
 async function openFile(file) {
   if (!file) return false;
   pause0();
@@ -728,20 +763,38 @@ async function openFile(file) {
     if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|bmp)$/i.test(file.name)) {
       const bitmap = await createImageBitmap(file);
       setSource({ kind: 'image', bitmap, w: bitmap.width, h: bitmap.height, file, name: file.name });
-    } else {
-      if (video.src) URL.revokeObjectURL(video.src);
-      video.src = URL.createObjectURL(file);
-      await new Promise((ok, bad) => {
-        video.onloadeddata = ok;
-        video.onerror = () => bad(new Error('瀏覽器無法解碼這個影片格式（可試 MP4/H.264；開源版 Chromium 不含 H.264）'));
-      });
-      // loadeddata 時第一幀不一定已可繪製；跳到 0 秒等 seeked 後再取畫面
-      await new Promise((ok) => {
-        video.addEventListener('seeked', ok, { once: true });
-        video.currentTime = 0;
-      });
-      setSource({ kind: 'video', w: video.videoWidth, h: video.videoHeight, file, name: file.name });
+      return true;
     }
+    // 播放器偶爾暫時打不開（剛匯出完大影片：解碼器、記憶體還沒釋放）→ 放掉舊影片、等一下再試
+    const waits = batchRunning ? [1000, 3000, 6000] : [800];
+    let err = null;
+    for (let i = 0; i <= waits.length; i++) {
+      try {
+        if (i) {
+          releaseVideo();
+          if (batchRunning) $('batchNote').textContent = `開啟 ${file.name} 失敗，${waits[i - 1] / 1000} 秒後重試（${i}/${waits.length}）…`;
+          await sleep(waits[i - 1]);
+        }
+        await loadVideo(file);
+        err = null;
+        break;
+      } catch (e) {
+        err = e;
+      }
+    }
+    if (err) {
+      if (!batchRunning) throw err;
+      releaseVideo();
+      const info = await probeVideo(file).catch((e) => { throw new Error(err.message + '；WebCodecs 也無法讀取：' + e.message); });
+      setSource({ kind: 'video', w: info.w, h: info.h, duration: info.duration, headless: true, file, name: file.name });
+      return true;
+    }
+    // loadeddata 時第一幀不一定已可繪製；跳到 0 秒等 seeked 後再取畫面
+    await new Promise((ok) => {
+      video.addEventListener('seeked', ok, { once: true });
+      video.currentTime = 0;
+    });
+    setSource({ kind: 'video', w: video.videoWidth, h: video.videoHeight, file, name: file.name });
     return true;
   } catch (err) {
     lastOpenError = err.message;
@@ -1208,6 +1261,8 @@ $('batchRun').onclick = async () => {
       $('batchNote').textContent = `多部匯出 ${i + 1}/${batchJobs.length}：${job.file.name}`;
       try {
         if (!job.current) {
+          releaseVideo(); // 先放掉上一部佔用的解碼器與記憶體
+          await sleep(300);
           if (!(await openFile(job.file))) throw new Error(lastOpenError || '無法開啟');
           if ($('batchEdit').checked && state.src.kind === 'video') { state.edit = shared(); syncEditUi(); }
         }
