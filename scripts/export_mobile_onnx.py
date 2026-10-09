@@ -10,6 +10,10 @@
   ShahidHasib586_aquafastnet  AquaFastNet（2026 修訂稿）        runs/uie_fastunet_base32/best.pt
   OceanZ9639_pic-uie          PIC-UIE（2026）                   weights/pic_uie.pth
   mkartik_shallow-uwnet       Shallow-UWnet（AAAI 2021）        model.ckpt（倉庫 README 的 Google Drive 連結，另外下載放進倉庫目錄）
+  LintaoPeng_U-shape_Transformer_for_Underwater_Image_Enhancement
+                              U-shape Transformer（TIP 2023）   saved_models/G/generator_795.pth（Google Drive，同上）
+  suhas-srinath_undive        UnDIVE（WACV 2025）               PretrainedModels/{UnDIVE_100,UIEB_pretrain_150,DDPM_100}.pth（Google Drive，同上）
+  piggy2009_DM_underwater     DM-UW（ACM MM 2023）              experiments_supervised/I950000_E3369_gen.pth（Google Drive，同上）
 
 網路結構直接用原作倉庫的程式（純 torch.nn 定義），權重以 weights_only 方式載入（不執行檔案裡的程式）。
 各模型原作測試流程的後處理一起放進 ONNX（輸出都已在 [0,1]）：
@@ -244,6 +248,168 @@ def shallowuwnet():
     return net.eval(), obj.eval()
 
 
+# ---------- 8. U-shape Transformer（輸入固定 256×256；取最大尺度輸出 output[3]，原作 save_image(normalize=True)） ----------
+def ushape():
+    root = os.path.join(C, 'LintaoPeng_U-shape_Transformer_for_Underwater_Image_Enhancement')
+    sys.path.insert(0, root)
+    from net.Ushape_Trans import Generator
+    sys.path.pop(0)
+    net = Generator()
+    net.load_state_dict(wload(os.path.join(root, 'saved_models', 'G', 'generator_795.pth')), strict=True)
+
+    class Last(nn.Module):
+        def __init__(self, g):
+            super().__init__()
+            self.g = g
+
+        def forward(self, x):
+            return self.g(x)[3]
+
+    m = Last(net).eval()
+    return m, m
+
+
+# ---------- 9. UnDIVE（擴散 U-Net 編碼器當特徵＋HDRNet 雙邊網格；兩組權重：UnDIVE_100 有用 UVE-38K 訓練、UIEB_pretrain_150 沒有） ----------
+def np_allow():
+    """DDPM_100.pth 裡存了 numpy 陣列（loss 紀錄）：只放行 numpy 重建陣列用的函式"""
+    import numpy.core.multiarray as ma
+    return [(ma._reconstruct, 'numpy.core.multiarray._reconstruct'), (ma.scalar, 'numpy.core.multiarray.scalar'), np.ndarray, np.dtype,
+            *[type(np.dtype(t)) for t in ('float64', 'float32', 'int64', 'int32', 'bool')]]
+
+
+def undive_build(which):
+    import functools
+    import torch.nn.functional as F
+    root = os.path.join(C, 'suhas-srinath_undive')
+    # 原作模組匯入時有 GPU 測試碼（slice.py 在 import 時對 .cuda() 張量做 jit.trace）、建構時把擴散網路搬到 cuda 並載入 DDPM 權重：
+    # 暫時把 .cuda()/.to('cuda') 變成不動作、torch.load 改成 CPU＋weights_only
+    sys.modules.setdefault('turtle', types.SimpleNamespace(forward=None))  # model_depth.py 有一行用不到的 from turtle import forward
+    cu, to, ld = torch.Tensor.cuda, nn.Module.to, torch.load
+    torch.Tensor.cuda = lambda self, *a, **k: self
+    nn.Module.to = lambda self, *a, **k: self if (a and str(a[0]).startswith('cuda')) else to(self, *a, **k)
+
+    def safe_load(f, *a, **k):
+        with torch.serialization.safe_globals(np_allow()):
+            return ld(f, map_location='cpu', weights_only=True)
+    torch.load = safe_load
+    try:
+        sys.path.insert(0, root)
+        import model_depth
+        prm = dict(luma_bins=8, channel_multiplier=1, spatial_bin=16, guide_complexity=16, batch_norm=False, net_input_size=256, net_output_size=512)
+        ref = model_depth.HDRPointwiseNN_depth(params=prm, ckpt=os.path.join(root, 'PretrainedModels', 'DDPM_100.pth'))
+        sd = safe_load(os.path.join(root, 'PretrainedModels', f'{which}.pth'))
+    finally:
+        torch.Tensor.cuda, nn.Module.to, torch.load = cu, to, ld
+        sys.path.pop(0)
+    r = ref.load_state_dict(sd, strict=False)  # 原作也是 strict=False；這裡確認權重真的全部對上
+    assert not r.missing_keys and not r.unexpected_keys, r
+    ref.eval()
+
+    def post(full, res):  # 原作 inference_per_video.py：res 夾在 [full, 1]、img = full / (res + 0.001)，存檔前 rescale_intensity（整張 min-max）
+        img = full / (torch.minimum(torch.maximum(res, full), torch.ones_like(full)) + 0.001)
+        lo, hi = img.min(), img.max()
+        return (img - lo) / torch.clamp(hi - lo, min=1e-8)
+
+    class Ref(nn.Module):  # 原作流程：低解析度輸入 = 最近鄰縮成 256×256（cv2.INTER_NEAREST），雙邊切片用原作的 torch.jit.script 版
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+        def forward(self, x):
+            res, _ = self.m(F.interpolate(x, (256, 256), mode='nearest'), x)
+            return post(x, res)
+
+    class Onnx(nn.Module):
+        """雙邊網格切片改寫：空間方向 = 雙線性放大（align_corners=False，邊界夾住，與原作的索引夾住相同）；
+        亮度方向照原作取最近的兩格（gather）、用同樣的平滑線性權重"""
+        def __init__(self, m):
+            super().__init__()
+            self.coeffs, self.guide, self.apply_c = m.coeffs, m.guide, m.apply_coeffs
+
+        def forward(self, x):
+            B, _, H, W = x.shape
+            grid, _ = self.coeffs(F.interpolate(x, (256, 256), mode='nearest'))  # [B,12,8,16,16]
+            nc, gd = grid.shape[1], grid.shape[2]
+            g = F.interpolate(grid.reshape(B, nc * gd, grid.shape[3], grid.shape[4]), (H, W), mode='bilinear', align_corners=False)
+            g = g.reshape(B, nc, gd, H, W)
+            gkf = self.guide(x) * gd  # [B,1,H,W]
+            gk0 = torch.floor(gkf - 0.5)
+            w0 = torch.clamp(1.0 - torch.sqrt((gk0 + 0.5 - gkf) ** 2 + 1e-8), min=0.0)
+            w1 = torch.clamp(1.0 - torch.sqrt((gk0 + 1.5 - gkf) ** 2 + 1e-8), min=0.0)
+            i0 = torch.clamp(gk0, 0, gd - 1).long().unsqueeze(1).expand(B, nc, 1, H, W)
+            i1 = torch.clamp(gk0 + 1, 0, gd - 1).long().unsqueeze(1).expand(B, nc, 1, H, W)
+            coeff = w0 * torch.gather(g, 2, i0).squeeze(2) + w1 * torch.gather(g, 2, i1).squeeze(2)
+            return post(x, self.apply_c(coeff, x))
+
+    return Onnx(ref).eval(), Ref(ref).eval()
+
+
+def undive():
+    return undive_build('UnDIVE_100')
+
+
+def undive_uieb():
+    return undive_build('UIEB_pretrain_150')
+
+
+# ---------- 10. DM-UW（條件擴散模型：預設 10 步 DDIM、eta=0 → 給定起始雜訊後完全確定） ----------
+# 原作起始雜訊用 CUDA 亂數產生器（種子 44444）；CPU 產生不出同一組，這裡用 CPU 產生器、同樣種子，把雜訊固定成常數放進 ONNX。
+# 10 次 U-Net 展開在同一張圖裡（共用同一份權重），輸入 256×256（原作驗證集的尺寸）。展開 10 次的追蹤很吃記憶體，所以用 64×64 匯出（全卷積、尺寸可變），在 256×256 驗證。
+def dmuw():
+    root = os.path.join(C, 'piggy2009_DM_underwater')
+    sys.path.insert(0, root)
+    try:
+        from model.ddpm_trans_modules import unet as U, diffusion as D
+    finally:
+        sys.path.pop(0)
+    net = U.UNet(in_channel=6, out_channel=3, norm_groups=24, inner_channel=48, channel_mults=[1, 2, 4, 8, 8],
+                 attn_res=[16], res_blocks=2, dropout=0.2, image_size=256)
+    diff = D.GaussianDiffusion(net, image_size=256, channels=3, loss_type='l1', conditional=True, schedule_opt=None)
+    diff.set_new_noise_schedule(dict(schedule='linear', n_timestep=2000, linear_start=1e-6, linear_end=1e-2), torch.device('cpu'))
+    sd = wload(os.path.join(root, 'experiments_supervised', 'I950000_E3369_gen.pth'))
+    sd = {k: v for k, v in sd.items() if not k.startswith('style_loss.')}  # 訓練用的 VGG 感知損失，推論用不到
+    diff.load_state_dict(sd, strict=True)
+    diff.eval()
+    steps = [1898, 1640, 1539, 1491, 1370, 1136, 972, 858, 680, 340]  # 原作 p_sample_loop 的預設（演化搜尋出的跳步）
+    noise = torch.randn((1, 3, 256, 256), generator=torch.Generator().manual_seed(44444))
+
+    class Ref(nn.Module):  # 原作的取樣迴圈（p_sample_ddim2），只把起始雜訊換成上面那組
+        def __init__(self, d):
+            super().__init__()
+            self.d = d
+
+        def forward(self, x):
+            g = torch.Generator().manual_seed(44444)
+            randn = torch.randn
+            torch.randn = lambda shape, device=None, generator=None, **k: randn(shape, generator=g)
+            try:
+                y = self.d.p_sample_loop({'SR': x * 2 - 1, 'style': None})
+            finally:
+                torch.randn = randn
+            return (y.clamp(-1, 1) + 1) / 2
+
+    class Onnx(nn.Module):
+        def __init__(self, d):
+            super().__init__()
+            self.unet = d.denoise_fn
+            ac = (1.0 - d.betas).cumprod(dim=0)  # 與原作 extract((1 - betas).cumprod(0), t) 相同的 float32 算法
+            self.register_buffer('noise', noise)
+            self.register_buffer('ts', torch.tensor(steps, dtype=torch.long))
+            self.register_buffer('at', ac[steps])
+            self.register_buffer('an', torch.cat([ac[steps[1:]], torch.ones(1)]))
+
+        def forward(self, x):
+            cond, img = x * 2 - 1, self.noise[:, :, :x.shape[2], :x.shape[3]]  # 256×256 時就是整組雜訊（只為了用小圖匯出、省記憶體）
+            for j in range(len(steps)):
+                at, an = self.at[j], self.an[j]
+                et = self.unet(torch.cat([cond, img], dim=1), self.ts[j:j + 1])
+                x0 = (img - et * (1 - at).sqrt()) / at.sqrt()
+                img = an.sqrt() * x0 + (1 - an).sqrt() * et
+            return (img.clamp(-1, 1) + 1) / 2
+
+    return Onnx(diff).eval(), Ref(diff).eval()
+
+
 SPECS = [  # (名稱, 建構, 後處理, ONNX 是否動態尺寸, 測試尺寸)
     ('mobileie', mobileie, Clip, True, [(256, 256), (192, 256)]),
     ('fgdpa', fgdpa, Clip, True, [(256, 256), (192, 256)]),
@@ -252,6 +418,10 @@ SPECS = [  # (名稱, 建構, 後處理, ONNX 是否動態尺寸, 測試尺寸)
     ('aquafastnet', aquafastnet, lambda n: n, True, [(256, 256), (192, 256)]),
     ('pic_uie', pic_uie, lambda n: n, True, [(256, 256), (144, 256), (360, 640)]),
     ('shallowuwnet', shallowuwnet, Clip, False, [(256, 256)]),  # 原作 test.py 壓成 256×256，save_image 會 clamp 到 [0,1]
+    ('ushape', ushape, MinMax, False, [(256, 256)]),
+    ('undive', undive, lambda n: n, True, [(256, 256), (144, 256), (360, 640)]),
+    ('undive_uieb', undive_uieb, lambda n: n, True, [(256, 256), (144, 256)]),
+    ('dmuw', dmuw, lambda n: n, True, [(256, 256)]),
 ]
 
 
@@ -273,7 +443,7 @@ if __name__ == '__main__':
         net, ref = build()
         model = post(net).eval()
         params = sum(p.numel() for p in net.parameters())
-        h0, w0 = sizes[0]
+        h0, w0 = (64, 64) if name == 'dmuw' else sizes[0]
         path = os.path.join(OUT, f'{name}.onnx')
         torch.onnx.export(model, (test_image(h0, w0),), path, input_names=['x'], output_names=['y'], opset_version=17, dynamo=False,
                           dynamic_axes={'x': {2: 'h', 3: 'w'}, 'y': {2: 'h', 3: 'w'}} if dyn else None)
@@ -281,7 +451,7 @@ if __name__ == '__main__':
         for h, w in sizes:
             x = test_image(h, w)
             with torch.no_grad():
-                r = post(ref)(x) if ref is not net else model(x)
+                r = ref(x) if name.startswith('undive') or name == 'dmuw' else post(ref)(x) if ref is not net else model(x)
                 t = model(x)
             o = torch.from_numpy(sess.run(['y'], {'x': x.numpy()})[0])
             print(f'{name:15s} {h}×{w}  參數 {params:,}  ONNX {os.path.getsize(path) / 1024:.0f} KB  '

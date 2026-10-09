@@ -7,7 +7,8 @@ import { METHODS } from '../lib/methods/index.js';
 const argv = process.argv.slice(2), pi = argv.indexOf('--perc');
 const perc = pi >= 0 ? JSON.parse(readFileSync(argv.splice(pi, 2)[1], 'utf8')) : {};
 const all = {};
-for (const f of argv) Object.assign(all, JSON.parse(readFileSync(f, 'utf8')));
+// 多個 JSON（平行分段、或 --clips 補跑的結果）逐方法、逐段合併
+for (const f of argv) for (const [id, r] of Object.entries(JSON.parse(readFileSync(f, 'utf8')))) all[id] = { ...all[id], ...r };
 const ref = all.reference;
 const clips = Object.keys(ref);
 const name = (id) => (id === 'input' ? '（未處理）' : METHODS.find((m) => m.id === id)?.name || id);

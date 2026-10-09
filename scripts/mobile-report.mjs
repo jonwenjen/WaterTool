@@ -11,7 +11,11 @@ let key = null;
 for (const a of process.argv.slice(2)) {
   if (a.startsWith('--')) { key = a.slice(2); groups[key] = []; } else groups[key].push(a);
 }
-const merge = (files = []) => Object.assign({}, ...files.map((f) => JSON.parse(readFileSync(f, 'utf8'))));
+const merge = (files = []) => { // 逐方法合併（同一方法的分段結果可能在不同檔案）
+  const all = {};
+  for (const f of files) for (const [id, r] of Object.entries(JSON.parse(readFileSync(f, 'utf8')))) all[id] = typeof r === 'object' && !Array.isArray(r) && all[id] ? { ...all[id], ...r } : r;
+  return all;
+};
 const video = merge(groups.video), perc = merge(groups.perc), eperc = merge(groups['euvp-perc']), speed = merge(groups.speed), euvp = merge(groups.euvp);
 const ALL = [...METHODS, ...CANDIDATES], isNew = new Set(['fgdpa', ...CANDIDATES.map((m) => m.id)]); // FGDPA 已加入 App，仍標為這次評測的新模型
 const name = (id) => (id === 'input' ? '（未處理）' : ALL.find((m) => m.id === id).name);
@@ -38,7 +42,7 @@ out.push('推論時間 = onnxruntime-web WASM 單執行緒、只算網路本身�
 out.push('「720p 原畫面」= 不縮小、直接把 1280×704（約 720p，FGDPA 要求邊長為 32 的倍數）整張丟進網路（只有可變尺寸的模型能這樣跑）。\n');
 out.push('| 方法 | 參數量 | 模型檔 | 推論（App 用的尺寸） | 推論（720p 原畫面） | EUVP PSNR | EUVP LPIPS |');
 out.push('|---|---|---|---|---|---|---|');
-const params = { mobileie: '4,075', fgdpa: '4,234', liteenhancenet: '13,688', lu2net: '175,571', aquafastnet: '309,862', picuie: '9,486', shallowuwnet: '219,456', fiveaplus: '9 千', uwcnn: '4 萬', uiec2net: '53 萬', nu2net: '315 萬', funie: '702 萬', waternet: '109 萬', uvenet: '53 萬' };
+const params = { mobileie: '4,075', fgdpa: '4,234', liteenhancenet: '13,688', lu2net: '175,571', aquafastnet: '309,862', picuie: '9,486', shallowuwnet: '219,456', ushape: '3,159 萬', undive: '672 萬', undive_uieb: '672 萬', dmuw: '1,071 萬', fiveaplus: '9 千', uwcnn: '4 萬', uiec2net: '53 萬', nu2net: '315 萬', funie: '702 萬', waternet: '109 萬', uvenet: '53 萬' };
 const NEW = ALL.filter((m) => isNew.has(m.id));
 for (const m of [...NEW, ...METHODS.filter((x) => x.needsModel && !isNew.has(x.id))]) {
   const s = speed[m.id] || {};

@@ -7,8 +7,9 @@
 //   亮度閃爍 = 相鄰格平均亮度差（0–255）。
 //   --dump <目錄>：另外把每個方法的輸出格與參考格存成原始 RGB（給 tools/perceptual_eval.py 算 LPIPS 與 FID）。
 //   --extra：另外評測 lib/methods/mobile-nets.js 的候選模型（不在 App 清單裡）。
+//   --clips a,b：只跑這幾段（中斷後補跑用）；--out 的 JSON 每跑完一段就更新一次。
 import { execFileSync } from 'node:child_process';
-import { readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readdirSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as C from '../lib/core.js';
 import { METHODS, defaults, register } from '../lib/methods/index.js';
@@ -44,7 +45,9 @@ function decode(file) {
   return { frames, fps: a / (b || 1), w, h };
 }
 
-const clips = readdirSync(dir).filter((f) => f.endsWith('-raw.gif')).map((f) => f.replace('-raw.gif', '')).sort();
+const onlyClips = opt('--clips', '');
+const clips = readdirSync(dir).filter((f) => f.endsWith('-raw.gif')).map((f) => f.replace('-raw.gif', '')).sort()
+  .filter((c) => !onlyClips || onlyClips.split(',').includes(c));
 const data = clips.map((name) => {
   const raw = decode(join(dir, `${name}-raw.gif`)), ref = decode(join(dir, `${name}-ref.gif`));
   const n = Math.min(raw.frames.length, ref.frames.length);
@@ -62,13 +65,24 @@ const save = (id, clip, frames) => {
   writeFileSync(join(dump, id, `${clip}.u8`), toU8(frames));
 };
 if (dump) {
-  writeFileSync(join(mkdirSync(dump, { recursive: true }) || dump, 'meta.json'), JSON.stringify(Object.fromEntries(data.map((c) => [c.name, { w: c.raw[0].w, h: c.raw[0].h, frames: c.raw.length }]))));
+  mkdirSync(dump, { recursive: true });
+  const metaFile = join(dump, 'meta.json'), meta = existsSync(metaFile) ? JSON.parse(readFileSync(metaFile, 'utf8')) : {}; // --clips 補跑時保留其他段
+  for (const c of data) meta[c.name] = { w: c.raw[0].w, h: c.raw[0].h, frames: c.raw.length };
+  writeFileSync(metaFile, JSON.stringify(meta));
   for (const clip of data) save('reference', clip.name, clip.ref);
 }
 
 const ctx = { runNet: await nodeRunNet() };
 const meanLum = (im) => C.mean(C.gray(im));
 const results = {};
+// 參考影片本身的亮度閃爍（作為對照）
+results.reference = {};
+for (const clip of data) {
+  let fl = 0;
+  for (let t = 1; t < clip.ref.length; t++) fl += Math.abs(meanLum(clip.ref[t]) - meanLum(clip.ref[t - 1])) * 255;
+  results.reference[clip.name] = { flicker: fl / (clip.ref.length - 1), frames: clip.ref.length };
+}
+const flush = () => { if (out) writeFileSync(out, JSON.stringify(results, null, 1)); };
 for (const id of methods) {
   results[id] = {};
   for (const clip of data) {
@@ -106,15 +120,8 @@ for (const id of methods) {
     const T = outs.length;
     results[id][clip.name] = { psnr: p / T, ssim: s / T, etemp: et / (T - 1), flicker: fl / (T - 1), frames: T, ms };
     process.stderr.write(`${id} ${clip.name} PSNR ${(p / T).toFixed(2)} SSIM ${(s / T).toFixed(3)} E_t ${(et / (T - 1)).toFixed(2)} ${ms.toFixed(0)} ms/格\n`);
+    flush();
   }
 }
-// 參考影片本身的亮度閃爍（作為對照）
-results.reference = {};
-for (const clip of data) {
-  let fl = 0;
-  for (let t = 1; t < clip.ref.length; t++) fl += Math.abs(meanLum(clip.ref[t]) - meanLum(clip.ref[t - 1])) * 255;
-  results.reference[clip.name] = { flicker: fl / (clip.ref.length - 1), frames: clip.ref.length };
-}
-const json = JSON.stringify(results, null, 1);
-if (out) writeFileSync(out, json);
-else process.stdout.write(json + '\n');
+if (out) flush();
+else process.stdout.write(JSON.stringify(results, null, 1) + '\n');
