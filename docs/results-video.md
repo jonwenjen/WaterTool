@@ -90,15 +90,19 @@ FID 是「一組對一組」的分佈距離，240 格對 2048 維特徵屬於小
 **有找到但用不了的**：UVENet（Du et al., Neural Networks 2025，多格輸入的水下影片網路）、UnDIVE（WACV 2025）、HDAMS-Net（2025）、Shallow-UWnet——
 權重只放在 Google Drive 或沒有公開；Mamba 類（WaterMamba 等）需要自訂 CUDA 運算子，無法轉成手機瀏覽器可跑的 ONNX。
 
-#### 其他候選的手機可行性（PGMamba、DM-UW、UCS-Net、Rep-UWnet、UIVE）
+#### 其他候選的手機可行性（PGMamba、DM-UW、UnDIVE、U-shape Transformer、USWformer、UCS-Net、Rep-UWnet、UIVE）
 
 沒有公開權重的模型無法評測還原品質，只能用原作程式（隨機權重）量計算量與速度。計算量 = 256×256 輸入的乘加次數（`torch.utils.flop_counter`）；
-速度 = 這台機器 ONNX Runtime CPU 單執行緒（量的時候機器上還有其他評測在跑，只看數量級；手機瀏覽器的 WASM 通常更慢）。對照：FGDPA 0.25 GMACs、PIC-UIE 0.05 GMACs。
+速度 = 這台機器 CPU 單執行緒（PyTorch 或 ONNX Runtime；量的時候機器上還有其他評測在跑，只看數量級；手機瀏覽器的 WASM 通常更慢）。
+對照（同樣條件、PyTorch）：FGDPA 4,234 參數、0.25 GMACs、68 ms；PIC-UIE 9,486 參數、0.05 GMACs、79 ms。
 
 | 模型 | 出處 | 程式／權重 | 參數 | 計算量（256²） | 實測速度 | 結論 |
 |---|---|---|---|---|---|---|
 | PGMamba | AAAI 2026（物理模型引導的全域 Mamba） | 程式在 GitHub，**權重未公開** | 460 萬 | 14.7 GMACs | 128²：2.8 秒；256²：約 11 秒 | ✗ 不適合即時 |
 | DM-UW | Tang et al., ACM MM 2023（Transformer 擴散模型＋非均勻跳步取樣） | 程式在 GitHub，權重只在 Google Drive | 1,071 萬 | 每步 66.9 GMACs × 10 步 = 669 GMACs | 每步 4.2 秒 → 每格約 42 秒 | ✗ 不可行 |
+| UnDIVE | Srinath et al., WACV 2025（擴散模型編碼器當生成先驗＋HDRNet 雙邊網格，影片訓練含光流一致性） | 程式在 GitHub，權重只在 Google Drive | 672 萬 | 15.3 GMACs（只跑一次，不是反覆去噪） | 256²：1.0 秒；套到 720p：2.4 秒 | △ 只適合關鍵幀模式離線匯出 |
+| U-shape Transformer | Peng et al., IEEE TIP 2023（LSUI 資料集） | 程式在 GitHub，權重只在 Google Drive／百度網盤 | 3,159 萬 | 26.0 GMACs（固定 256×256） | 1.3 秒 | ✗ 模型檔約 120 MB，太大 |
+| USWformer | Mishra et al., WACV 2025（稀疏小波自注意力） | **沒有官方程式與權重**；GitHub 上只有一個非官方重現（結構與論文不符：1,932 萬參數、23 GMACs） | 119 萬（論文） | — | — | 無法評估 |
 | UCS-Net | — | 找不到論文程式或權重 | — | — | — | 無法評估 |
 | Rep-UWnet | Liu et al., Sensors 2024（RepVGG 重參數化，以 Shallow-UWnet 為基礎） | **沒有公開程式與權重** | 45 萬（論文） | 估計約 30 GMACs（全解析度卷積、不降採樣：參數 × 像素數） | — | ✗ 計算量比 PGMamba 還大 |
 | UIVE | Luo et al., Frontiers in Marine Science 2025（無 BN 殘差塊 U-Net＋自適應亮度後處理） | **沒有公開程式與權重** | — | — | 論文：640×480 36 FPS（論文自己的硬體） | 可能可行，但無法驗證 |
@@ -107,6 +111,11 @@ FID 是「一組對一組」的分佈距離，240 格對 2048 維特徵屬於小
   隨機 Gumbel 路由改成 argmax、`torch.sort` 改成 topk 後才能轉出 ONNX（固定尺寸、8–13 千個節點、約 20 MB）。即使轉得出來也是 FGDPA 的約 58 倍計算量；
   原作的 Gumbel 路由每格隨機，影片會閃爍。最多只能偶爾處理關鍵幀，而且沒有權重可用。
 - **DM-UW**：擴散模型要在雜訊上反覆去噪，預設已用演化搜尋出的 10 步（原本 2,000 步），每步仍要跑完整的 1,071 萬參數網路。
+- **UnDIVE**：推論時只跑一次（擴散 U-Net 的編碼器在 t=0 抽特徵，再由 HDRNet 預測雙邊網格係數套回原解析度），這個「低解析度預測、原解析度套用」的設計和 App 的做法相近。
+  計算量約 FGDPA 的 60 倍，手機 WASM 每格估計數秒，只適合 App 的「快速匯出」（每 0.5–1 秒一個關鍵幀）。雙邊網格切片用到 5 維 grid_sample，
+  ONNX 要 opset 20 才有，轉換前還得改寫。權重放在 Google Drive，這個環境下載不到，無法評測品質。
+- **U-shape Transformer**：3,159 萬參數（float32 約 120 MB），輸入固定 256×256。品質在 LSUI／UIEB 上不錯，但模型太大，不適合放進網頁 App。
+- **USWformer**：論文只有 119 萬參數，但官方沒有釋出程式；非官方重現的結構與論文不同，量出來的數字不能代表原作。
 - **Rep-UWnet、UIVE**：論文有公開，但沒有程式和權重（MDPI、Frontiers 的頁面在這個環境也連不到）；PIC-UIE 有權重，已完整評測（見下表）。
 - 若之後拿到 UCS-Net 的論文或程式連結，可以用同樣的方式再評估。
 
