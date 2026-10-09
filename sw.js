@@ -2,7 +2,7 @@
 // - App 程式（HTML/JS/CSS…）：網路優先，失敗時用快取；快取名稱隨版本更新（APP_CACHE），舊版自動清除。
 // - 深度模型（models/*.onnx）與 ONNX 執行環境 WASM：由 worker.js 存在獨立的 MODEL_CACHE，
 //   App 更新不會清掉，只下載一次；這裡不攔截這兩個檔案。
-const APP_CACHE = 'watertool-app-v35';
+const APP_CACHE = 'watertool-app-v36';
 const MODEL_CACHE = 'watertool-models-v1'; // 與 worker.js 相同
 const PERSISTENT = /\/(models\/[^/]+\.onnx|vendor\/ort\/ort-wasm-simd-threaded\.wasm)$/;
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'player-gl.js', 'worker.js', 'manifest.webmanifest', 'icons/icon.svg',

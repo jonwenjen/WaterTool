@@ -36,8 +36,18 @@ const waitIdle = () => page.waitForFunction(() => document.getElementById('busy'
 
 try {
   await page.goto(`http://localhost:${port}/`);
+  // 預設簡易模式：方法清單、方法與出處都只列前 6 名，選中的方法在清單裡
+  const simple = await page.evaluate(() => ({
+    n: document.querySelectorAll('.method').length,
+    about: document.querySelectorAll('#about details').length,
+    checked: document.querySelectorAll('.method[aria-checked="true"]').length,
+    count: document.getElementById('methodCount').textContent,
+  }));
+  ok(simple.n === 6 && simple.about === 6 && simple.checked === 1 && simple.count === '6', `簡易模式列出 ${simple.n} 種方法、出處 ${simple.about} 項`);
+  await page.click('#modeAdvanced');
   const N = await page.evaluate(() => document.querySelectorAll('.method').length);
-  ok(N === METHODS.length, `列出 ${N} 種方法`);
+  const about = await page.evaluate(() => document.querySelectorAll('#about details').length);
+  ok(N === METHODS.length && about === METHODS.length, `進階模式列出 ${N} 種方法、出處 ${about} 項`);
 
   // 合成示範
   await page.click('#demo');

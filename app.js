@@ -85,10 +85,21 @@ const state = {
   playing: false,
   models: new Set(), // 已載入的模型檔
   edit: structuredClone(DEFAULT_EDIT), // 剪輯：旋轉、裁切、速度、時間裁切（匯出時套用）
+  mode: saved.mode === 'advanced' ? 'advanced' : 'simple', // 簡易：只列評分前 SIMPLE_N 名；進階：全部
 };
+// ---------------- 簡易／進階 ----------------
+const SIMPLE_N = 6;
+/** 目前列出的方法（方法清單、方法與出處、全部比較都用這份） */
+const shownMethods = () => (state.mode === 'advanced' ? METHODS : METHODS.slice(0, SIMPLE_N));
+/** 目前選的方法沒列出來時，改選列出的第一個不需下載模型的方法（沒有就選第一個） */
+function shownFallback() {
+  const list = shownMethods();
+  return list.some((m) => m.id === state.method) ? null : (list.find((m) => !m.needsModel) || list[0]).id;
+}
+state.method = shownFallback() || state.method;
 function save() {
   try {
-    localStorage.setItem('watertool', JSON.stringify({ method: state.method, params: state.params, ui: readUi() }));
+    localStorage.setItem('watertool', JSON.stringify({ method: state.method, params: state.params, ui: readUi(), mode: state.mode }));
   } catch { /* 私密模式等：略過 */ }
 }
 
@@ -903,7 +914,8 @@ for (const b of document.querySelectorAll('.seg button[data-view]')) {
 async function runCompare() {
   if (!state.src) return;
   const box = $('compare');
-  box.innerHTML = `<p class="note">${METHODS.length} 種方法計算中…（深度模型第一次載入需要幾秒）</p>`;
+  const list = shownMethods();
+  box.innerHTML = `<p class="note">${list.length} 種方法計算中…（深度模型第一次載入需要幾秒）</p>`;
   const [w, h] = C.fitSize(orig.width, orig.height, 480);
   const c = document.createElement('canvas');
   c.width = w;
@@ -911,7 +923,7 @@ async function runCompare() {
   c.getContext('2d').drawImage(orig, 0, 0, w, h);
   const data = c.getContext('2d').getImageData(0, 0, w, h);
   try {
-    const r = await call({ type: 'compare', rgba: data.data.buffer, w, h, methods: METHODS.map((m) => m.id), params: state.params, post: +$('post').value }, [data.data.buffer]);
+    const r = await call({ type: 'compare', rgba: data.data.buffer, w, h, methods: list.map((m) => m.id), params: state.params, post: +$('post').value }, [data.data.buffer]);
     box.innerHTML = '';
     for (const t of r.tiles) {
       const m = byId[t.id];
@@ -942,7 +954,10 @@ function renderMethods() {
   $('methodsNote').textContent = `依同一組水下影片（UVE-38K 5 段成對影片）的 PSNR / SSIM 由好到壞排序。PSNR、SSIM 越高、LPIPS（感知距離）與 FID（整體分佈距離）越低，越接近參考影片；未處理的原片為 ${scoreText(RAW_SCORE)}。`;
   const box = $('methods');
   box.innerHTML = '';
-  METHODS.forEach((m, i) => {
+  $('methodCount').textContent = shownMethods().length;
+  $('modeSimple').setAttribute('aria-pressed', String(state.mode === 'simple'));
+  $('modeAdvanced').setAttribute('aria-pressed', String(state.mode === 'advanced'));
+  shownMethods().forEach((m, i) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'method';
@@ -953,6 +968,20 @@ function renderMethods() {
     box.append(b);
   });
 }
+function setMode(mode) {
+  if (state.mode === mode) return;
+  state.mode = mode;
+  const next = shownFallback();
+  if (next) selectMethod(next); // 會重畫方法清單並存檔
+  else {
+    renderMethods();
+    save();
+  }
+  renderAbout();
+  if (state.view === 'compare') runCompare();
+}
+$('modeSimple').onclick = () => setMode('simple');
+$('modeAdvanced').onclick = () => setMode('advanced');
 function selectMethod(id) {
   state.method = id;
   renderMethods();
@@ -2006,7 +2035,7 @@ async function exportDemo() {
 function renderAbout() {
   const box = $('about');
   box.innerHTML = '';
-  METHODS.forEach((m, i) => {
+  shownMethods().forEach((m, i) => {
     const info = INFO[m.id];
     const d = document.createElement('details');
     d.innerHTML = `<summary>${i + 1}. ${m.name} <span class="score">${scoreText(SCORES[m.id])}</span></summary>

@@ -17,7 +17,7 @@
       <img src="icons/icon.svg" alt="" width="28" height="28">
       <div>
         <h1>WaterTool</h1>
-        <p>水下影片還原 · 16 種方法 · 檔案不離開裝置</p>
+        <p>水下影片還原 · <span id="methodCount">16</span> 種方法 · 檔案不離開裝置</p>
       </div>
     </div>
     <div class="actions">
@@ -25,6 +25,10 @@
       <input id="file" type="file" accept="video/*,image/*" hidden>
       <button class="btn" id="demo" type="button">合成示範</button>
       <button class="btn" id="install" type="button">安裝 App</button>
+    </div>
+    <div class="mode" role="group" aria-label="顯示模式">
+      <button type="button" id="modeSimple" aria-pressed="true" title="只列評分最高的 6 種方法">簡易</button>
+      <button type="button" id="modeAdvanced" aria-pressed="false" title="列出全部方法">進階</button>
     </div>
   </header>
   <div class="prefetch" id="prefetch" role="status" hidden>
