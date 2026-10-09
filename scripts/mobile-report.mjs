@@ -13,7 +13,7 @@ for (const a of process.argv.slice(2)) {
 }
 const merge = (files = []) => Object.assign({}, ...files.map((f) => JSON.parse(readFileSync(f, 'utf8'))));
 const video = merge(groups.video), perc = merge(groups.perc), eperc = merge(groups['euvp-perc']), speed = merge(groups.speed), euvp = merge(groups.euvp);
-const ALL = [...METHODS, ...CANDIDATES], isNew = new Set(CANDIDATES.map((m) => m.id));
+const ALL = [...METHODS, ...CANDIDATES], isNew = new Set(['fgdpa', ...CANDIDATES.map((m) => m.id)]); // FGDPA 已加入 App，仍標為這次評測的新模型
 const name = (id) => (id === 'input' ? '（未處理）' : ALL.find((m) => m.id === id).name);
 const clips = Object.keys(video.reference);
 const avg = (id, k) => {
@@ -39,7 +39,8 @@ out.push('「720p 原畫面」= 不縮小、直接把 1280×704（約 720p，FGD
 out.push('| 方法 | 參數量 | 模型檔 | 推論（App 用的尺寸） | 推論（720p 原畫面） | EUVP PSNR | EUVP LPIPS |');
 out.push('|---|---|---|---|---|---|---|');
 const params = { mobileie: '4,075', fgdpa: '4,234', liteenhancenet: '13,688', lu2net: '175,571', aquafastnet: '309,862', fiveaplus: '9 千', uwcnn: '4 萬', uiec2net: '53 萬', nu2net: '315 萬', funie: '702 萬', waternet: '109 萬', uvenet: '53 萬' };
-for (const m of [...CANDIDATES, ...METHODS.filter((x) => x.needsModel)]) {
+const NEW = ALL.filter((m) => isNew.has(m.id));
+for (const m of [...NEW, ...METHODS.filter((x) => x.needsModel && !isNew.has(x.id))]) {
   const s = speed[m.id] || {};
   const nm = isNew.has(m.id) ? `**${m.short}** 🆕` : m.short;
   out.push(`| ${nm} | ${params[m.id] || '—'} | ${s.mb !== undefined ? (s.mb < 1 ? Math.round(s.mb * 1024) + ' KB' : s.mb.toFixed(1) + ' MB') : '—'} | ${s.ms !== undefined ? `${f(s.ms, 1)} ms（${s.size}）` : '—'} | ${s.ms720 !== undefined ? f(s.ms720, 0) + ' ms' : '—'} | ${euvp[m.id] ? f(euvp[m.id].psnr) : '—'} | ${eperc[m.id] ? f(eperc[m.id].lpips, 3) : '—'} |`);

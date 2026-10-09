@@ -37,7 +37,7 @@ const waitIdle = () => page.waitForFunction(() => document.getElementById('busy'
 try {
   await page.goto(`http://localhost:${port}/`);
   const N = await page.evaluate(() => document.querySelectorAll('.method').length);
-  ok(N === 15, `列出 ${N} 種方法`);
+  ok(N === METHODS.length, `列出 ${N} 種方法`);
 
   // 合成示範
   await page.click('#demo');
@@ -62,7 +62,7 @@ try {
   }
   ok(true, `${classic.length} 種傳統方法都能在介面上處理`);
 
-  // 7 個深度學習模型（下載模型、WASM 推論）
+  // 全部深度學習模型（下載模型、WASM 推論）
   for (const m of nets) {
     await pick(m.id);
     const id = await page.evaluate(() => window.__watertool.state.method);
@@ -76,8 +76,8 @@ try {
 
   // 七法比較
   await page.click('[data-view=compare]');
-  await page.waitForFunction(() => document.querySelectorAll('.tile canvas').length === 15, null, { timeout: 600000 });
-  ok(true, '全部比較顯示 15 張結果');
+  await page.waitForFunction((n) => document.querySelectorAll('.tile canvas').length === n, METHODS.length, { timeout: 600000 });
+  ok(true, `全部比較顯示 ${METHODS.length} 張結果`);
   await shot({ path: join(TMP, 'compare.png'), fullPage: true });
   await page.click('[data-view=split]');
 
@@ -148,7 +148,7 @@ try {
     await page.waitForTimeout(800);
     await shot({ path: join(OUT, 'photo-split.png') });
     await page.click('[data-view=compare]');
-    await page.waitForFunction(() => document.querySelectorAll('.tile canvas').length === 15, null, { timeout: 600000 });
+    await page.waitForFunction((n) => document.querySelectorAll('.tile canvas').length === n, METHODS.length, { timeout: 600000 });
     await page.locator('#compare').screenshot({ path: join(OUT, 'photo-compare.png') });
     await page.click('[data-view=split]');
     ok(true, '真實照片截圖');

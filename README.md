@@ -6,7 +6,7 @@
 
 - **不上傳、不需伺服器**：所有運算在本機瀏覽器的背景執行緒完成。
 - **可安裝成 App**（PWA）：手機「加到主畫面」、桌面 Chrome「安裝」，安裝後可離線使用。
-- **15 種方法**：7 種傳統（物理模型 / 增強）+ 7 個深度學習模型（FUnIE-GAN、WaterNet、UVE-Net 與 4 個 UIEB 訓練模型，ONNX 在瀏覽器執行）+ **Diverout_sim**（重現 DIVEROUT「高／超高／標準」調色）。
+- **16 種方法**：7 種傳統（物理模型 / 增強）+ 8 個深度學習模型（FUnIE-GAN、WaterNet、UVE-Net、4 個 UIEB 訓練模型與 2026 年的手機級模型 **FGDPA**，ONNX 在瀏覽器執行）+ **Diverout_sim**（重現 DIVEROUT「高／超高／標準」調色）。
 - **每種方法都有客觀評測**：EUVP 真實照片與 UVE-38K 真實影片的 PSNR / SSIM / LPIPS（影片另有 FID）、合成真值場景、閃爍量測（[`docs/results.md`](docs/results.md)、[`docs/results-video.md`](docs/results-video.md)）。
 
 ![分割比較（左原始、右 Ancuti 融合）](docs/screenshots/video-split.png)
@@ -18,8 +18,8 @@
 ```bash
 npm install          # 只有開發 / 測試需要；網站本身是純靜態檔
 npm run serve        # http://localhost:8080
-npm test             # 單元測試（核心運算、15 種方法、時間穩定化）
-npm run e2e -- <影片>  # 無頭 Chromium 端對端：播放、15 種方法、全部比較、7 個深度模型、Diverout_sim 關鍵幀、匯出 MP4/PNG
+npm test             # 單元測試（核心運算、16 種方法、時間穩定化）
+npm run e2e -- <影片>  # 無頭 Chromium 端對端：播放、16 種方法、全部比較、8 個深度模型、Diverout_sim 關鍵幀、匯出 MP4/PNG
 node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評測（照片、合成場景）
 node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/video-report.mjs v.json > docs/results-video.md   # 影片
 # LPIPS / FID（需要 Python：torch、scipy、numpy，以及 pip install --no-deps torch-fidelity）
@@ -55,7 +55,7 @@ node scripts/net-speed.mjs --extra > s.json && node scripts/mobile-report.mjs --
    色彩更新比影片慢（手機上常要 0.3–2 秒），所以播放用較粗的局部色彩轉換、新舊轉換之間在 GPU 上平滑過渡，只有真的換鏡頭才直接切換；
    模擬手機延遲 0.8 秒時，預覽與該格精確結果的誤差起伏：RGHS 2.10 → 0.22、MLLE 2.06 → 0.32、NU²-Net 1.71 → 0.18
    （`FIT_DELAY=800 node scripts/preview-accuracy.mjs <影片> <方法>`）。
-5. **第一次開啟會在背景下載全部 7 個深度模型與執行環境（約 51 MB）** 存到本機，頂端會顯示進度；之後選用免等待、可離線。
+5. **第一次開啟會在背景下載全部 8 個深度模型與執行環境（約 51 MB）** 存到本機，頂端會顯示進度；之後選用免等待、可離線。
 6. **影片時間一致性**：τ（參數平滑時間）、輸出去閃爍強度、每 N 幀重新估計（FUnIE-GAN 預設 4）。
 7. **不會卡住**：背景運算一個一個排隊（同一個模型不會同時推論）；若超過 40 秒沒有回應（例如手機記憶體不足），
    會自動重新啟動並重算目前畫面；播放中重新啟動時，播放的色彩計算也會自己接回。手機收回 GPU 畫布時自動改用逐幀處理，影片不會停住。
@@ -136,7 +136,7 @@ node scripts/net-speed.mjs --extra > s.json && node scripts/mobile-report.mjs --
 
 ## 一、研究整理：網路上的論文與 GitHub 實作
 
-### 實作進 App 的 15 種方法
+### 實作進 App 的 16 種方法
 
 | # | 方法 | 類型 | 論文 | GitHub 參考實作 |
 |---|---|---|---|---|
@@ -155,6 +155,7 @@ node scripts/net-speed.mjs --extra > s.json && node scripts/mobile-report.mjs --
 | 13 | WaterNet | 深度學習 | Li et al., *An Underwater Image Enhancement Benchmark Dataset and Beyond*（UIEB），IEEE TIP 2020 · [arXiv](https://arxiv.org/abs/1901.05495) | [Li-Chongyi/Water-Net_Code](https://github.com/Li-Chongyi/Water-Net_Code)；PyTorch 權重 [tnwei/waternet](https://github.com/tnwei/waternet)（MIT） |
 | 14 | UVE-Net（影片） | 深度學習 | Xie et al., *UVEB: A Large-scale Benchmark and Baseline Towards Real-World Underwater Video Enhancement*, CVPR 2024 · [arXiv](https://arxiv.org/abs/2404.14542) | [yzbouc/UVEB](https://github.com/yzbouc/UVEB)（MIT，含權重） |
 | 15 | Diverout_sim | 調色模擬 | DIVEROUT App 影片「AI 調色」的黑箱反推模型 · [`docs/diverout-model.md`](docs/diverout-model.md) | 命令列工具 [`tools/diverout_cc.py`](tools/diverout_cc.py)；App 版 [`diverout.js`](lib/methods/diverout.js) |
+| 16 | FGDPA | 深度學習 | Zhang et al., *Real-Time Underwater Image Enhancement via Frequency-Guided Dual-Path Attention*, ICME 2026 · [arXiv](https://arxiv.org/abs/2606.30314) | [LethyZhang/FGDPA](https://github.com/LethyZhang/FGDPA)（Apache-2.0，含權重）；骨幹 [AVC2-UESTC/MobileIE](https://github.com/AVC2-UESTC/MobileIE)（ICCV 2025） |
 
 ### 第二輪：再加入的 5 種方法（依評分挑選）
 
@@ -216,7 +217,7 @@ node scripts/net-speed.mjs --extra > s.json && node scripts/mobile-report.mjs --
 
 ---
 
-## 二、15 種方法：原理與本實作
+## 二、16 種方法：原理與本實作
 
 每個方法分成兩步：`estimate()` 在 320 px 小圖上估計**全域量**（背景光、白平衡增益、拉伸範圍、散射係數…），
 `apply()` 在處理解析度上套用。這樣一來估計便宜、全域量也能做時間平滑。程式在 [`lib/methods/`](lib/methods)。
@@ -293,6 +294,15 @@ UVEB 官方小模型（12 通道特徵、53 萬參數）：把中間格縮小 4 
 - **命令列版**：`pip install numpy opencv-python`（另需 ffmpeg），`python3 tools/diverout_cc.py dive.mp4` → `dive_cc.mp4`（保留音軌），
   也可處理照片與整個資料夾；4K 片建議加 `--max-height 1080`。
 
+### 16. FGDPA（Zhang 2026）— [`fgdpa.js`](lib/methods/fgdpa.js)
+手機級即時水下增強網路，只有 **4,234 個參數（34 KB）**。骨幹是 MobileIE（ICCV 2025）的重參數化小網路：訓練時用多分支卷積加固定 DCT 頻率先驗，
+推論時合併成單一卷積；再加「頻域引導雙路注意力」——特徵縮到 32×32 取 2D 頻譜幅度做通道注意力，最大／平均圖做空間注意力。UIEB 訓練。
+- **轉換**：[`scripts/export_mobile_onnx.py`](scripts/export_mobile_onnx.py) 直接用原作的網路定義與權重，32×32 FFT 改成等價的 DFT 矩陣乘法
+  （手機瀏覽器的 ONNX Runtime 不一定支援 FFT），與原作 PyTorch 輸出最大差 < 1×10⁻⁶。
+- **App 裡的用法**：和其他深度模型一樣保持長寬比、長邊 256（邊長須為 32 的倍數），再擬合成局部色彩轉換套回原解析度。
+- **評測**：UVE-38K 影片 PSNR 19.39、SSIM 0.612（與 WaterNet 相同）；推論每格 43 ms（WASM 單執行緒），是 App 裡最快的深度模型。
+  是這次評測 5 個手機級新模型中最好的（見下方「手機級新模型」與 [`docs/results-video.md`](docs/results-video.md)）。
+
 ---
 
 ## 三、影片時間一致性 — [`lib/temporal.js`](lib/temporal.js)
@@ -313,9 +323,10 @@ UVEB 官方小模型（12 通道特徵、53 萬參數）：把中間格縮小 4 
 | 方法 | PSNR ↑ | SSIM ↑ | LPIPS ↓ | 色差 ΔE ↓ | UIQM ↑ |
 |---|---|---|---|---|---|
 | 未處理 | 17.19 | 0.680 | 0.303 | 23.6 | 2.73 |
-| FUnIE-GAN ※ | **21.92** | **0.708** | **0.248** | **13.3** | 3.23 |
+| FUnIE-GAN ※ | **21.92** | 0.708 | **0.248** | **13.3** | 3.23 |
 | NU²-Net | 19.81 | 0.705 | 0.264 | 16.9 | 3.24 |
 | UIEC²-Net | 19.43 | 0.697 | 0.265 | 18.0 | 3.22 |
+| **FGDPA** | 19.24 | **0.716** | 0.259 | 16.6 | 3.20 |
 | Five A⁺ | 19.13 | 0.695 | 0.274 | 18.5 | 3.20 |
 | **WaterNet** | 19.05 | 0.698 | 0.266 | 17.4 | 3.22 |
 | **UVE-Net** | 18.94 | 0.677 | 0.280 | 17.7 | 3.13 |
@@ -329,7 +340,7 @@ UVEB 官方小模型（12 通道特徵、53 萬參數）：把中間格縮小 4 
 | MLLE | 15.07 | 0.644 | 0.325 | 23.8 | 3.07 |
 | UDCP | 11.73 | 0.453 | 0.417 | 37.8 | 2.81 |
 
-粗體名稱 = 第三輪新加入的 2 種。※ FUnIE-GAN 就是用 EUVP 訓練的，在這組照片上有主場優勢；
+粗體名稱 = 第三輪新加入的 2 種與最新加入的 FGDPA。※ FUnIE-GAN 就是用 EUVP 訓練的，在這組照片上有主場優勢；
 其餘 6 個深度模型是在 UIEB / UVEB 訓練的，換到 EUVP 仍然 PSNR 全部高於未處理，除 UWCNN 外也都勝過 7 種傳統方法。
 傳統方法中只有 ULAP、IBLA 的 PSNR 高於未處理——參考圖偏向「保留水色、溫和修正」，強力去色偏的方法反而扣分。
 LPIPS（深度特徵的感知距離，越低越像參考）：FUnIE-GAN 最低（0.248，主場優勢），其次 NU²-Net、ULAP、UIEC²-Net、WaterNet、
@@ -344,21 +355,23 @@ Diverout_sim 都在 0.264–0.267；ULAP 與 Diverout_sim 的 PSNR 只是中段�
 | 3 | UIEC²-Net | 19.79 | 0.616 | 0.251 | 71.3 | 10.72 | 5555 |
 | 4 | NU²-Net | 19.69 | 0.616 | 0.255 | 74.5 | 10.76 | 1277 |
 | 5 | **Diverout_sim** | 19.65 | 0.589 | **0.223** | **59.2** | 11.22 | **5** |
-| 6 | **UVE-Net** | 18.75 | 0.591 | 0.316 | 77.9 | 11.22 | 314 |
-| 7 | RGHS | 18.30 | 0.547 | 0.272 | 62.6 | 12.25 | 44 |
-| 8 | FUnIE-GAN | 17.93 | 0.576 | 0.355 | 91.2 | 11.60 | 419 |
-| 9 | UWCNN | 17.80 | 0.575 | 0.391 | 119.3 | 11.50 | 879 |
-| 10 | MLLE | 17.56 | 0.511 | 0.447 | 128.2 | 15.95 | 127 |
+| 6 | **FGDPA** | 19.39 | 0.612 | 0.281 | 73.6 | 10.90 | 114 |
+| 7 | **UVE-Net** | 18.75 | 0.591 | 0.316 | 77.9 | 11.22 | 314 |
+| 8 | RGHS | 18.30 | 0.547 | 0.272 | 62.6 | 12.25 | 44 |
+| 9 | FUnIE-GAN | 17.93 | 0.576 | 0.355 | 91.2 | 11.60 | 419 |
+| 10 | UWCNN | 17.80 | 0.575 | 0.391 | 119.3 | 11.50 | 879 |
+| 11 | MLLE | 17.56 | 0.511 | 0.447 | 128.2 | 15.95 | 127 |
 | — | 未處理 | 16.84 | 0.575 | 0.361 | 78.5 | 11.08 | — |
-| 11 | 色彩平衡＋融合 | 16.24 | 0.578 | 0.280 | 98.7 | 11.59 | 104 |
-| 12 | Sea-thru（ULAP 深度） | 14.80 | 0.469 | 0.410 | 139.3 | 14.40 | 246 |
-| 13 | ULAP | 13.44 | 0.500 | 0.411 | 107.8 | 12.28 | 27 |
-| 14 | IBLA | 13.32 | 0.426 | 0.374 | 86.1 | 12.95 | 249 |
-| 15 | UDCP | 11.01 | 0.367 | 0.452 | 93.7 | 13.74 | 31 |
+| 12 | 色彩平衡＋融合 | 16.24 | 0.578 | 0.280 | 98.7 | 11.59 | 104 |
+| 13 | Sea-thru（ULAP 深度） | 14.80 | 0.469 | 0.410 | 139.3 | 14.40 | 246 |
+| 14 | ULAP | 13.44 | 0.500 | 0.411 | 107.8 | 12.28 | 27 |
+| 15 | IBLA | 13.32 | 0.426 | 0.374 | 86.1 | 12.95 | 249 |
+| 16 | UDCP | 11.01 | 0.367 | 0.452 | 93.7 | 13.74 | 31 |
 
 UVE-38K 的參考影片是從 12 種增強方法挑選、再做幀間一致化的結果；GIF 預覽為 256 色，分數適合方法間互相比較。
 Diverout_sim 以每 1 秒的關鍵幀＋線性內插處理（同 DIVEROUT「高」），只是整張畫面的色階拉伸，卻排到第 5、與 NU²-Net 只差 0.04 dB，
-而且每格只要 5 ms（深度模型的百分之一）。沒了 EUVP 的主場優勢，FUnIE-GAN 掉到第 8；前 4 名都是 UIEB 訓練的模型，差距在 0.4 dB 內。
+而且每格只要 5 ms（深度模型的百分之一）。沒了 EUVP 的主場優勢，FUnIE-GAN 掉到第 9；前 4 名都是 UIEB 訓練的模型，差距在 0.4 dB 內。
+新加入的 **FGDPA** 只有 4 千參數就排第 6，SSIM 與第 1 名 WaterNet 相同。
 每格 ms 是 Node 單執行緒 CPU、320 px 全方法處理；App 播放時改用 GPU 套用局部係數，不受這個速度限制。
 
 **LPIPS 與 FID 看到的排名不太一樣**：
@@ -375,7 +388,7 @@ Diverout_sim 以每 1 秒的關鍵幀＋線性內插處理（同 DIVEROUT「高�
   App 的方法清單仍依 PSNR / SSIM 排序，四項分數都標在每個方法旁。
 
 **手機級新模型（2024–2026）**：另外評測了 5 個權重公開、適合手機即時執行的新模型（完整表格與方法見
-[`docs/results-video.md`](docs/results-video.md)「手機級新模型」一節；尚未加入 App）：
+[`docs/results-video.md`](docs/results-video.md)「手機級新模型」一節；其中 **FGDPA 已加入 App**）：
 
 | 模型 | 參數量 | 影片 PSNR / SSIM | LPIPS / FID | 推論（WASM 單執行緒） |
 |---|---|---|---|---|
@@ -387,7 +400,7 @@ Diverout_sim 以每 1 秒的關鍵幀＋線性內插處理（同 DIVEROUT「高�
 | 對照：WaterNet / Five A⁺ | 109 萬 / 9 千 | 20.05 / 0.612、19.96 / 0.618 | 0.252 / 69.5、0.262 / 77.5 | 6559 / 901 ms |
 
 FGDPA 只有 4 千參數（34 KB）就排到 20 種方法的第 6、只比第 1 名 WaterNet 低 0.66 dB（SSIM 相同），推論快 150 倍；
-5 個新模型都沒超過 App 現有的前 4 名，優勢是速度（新模型 43–401 ms，前 4 名 901–8,395 ms）與大小。MobileIE、FGDPA、AquaFastNet 是 Apache-2.0，可以加進 App；
+5 個新模型都沒超過 App 現有的前 4 名，優勢是速度（新模型 43–401 ms，前 4 名 901–8,395 ms）與大小。FGDPA 已加入 App；MobileIE、AquaFastNet 也是 Apache-2.0，之後可以再加；
 LU2Net、LiteEnhanceNet 的倉庫沒有授權聲明，暫不散布權重。
 
 **合成場景**（已知真值；水上場景經修正成像模型退化成藍水/綠水/混濁）——平均色差 ΔE（越低越好）：
@@ -437,7 +450,7 @@ index.html  style.css  app.js     介面（分割比較、播放、全部比較�
 worker.js                         背景執行緒：所有運算、ONNX 模型載入與本機快取
 sw.js  manifest.webmanifest       PWA（離線、安裝）
 lib/core.js                       影像基礎：縮放、方框/高斯/最小值濾波、引導濾波、金字塔、Lab
-lib/methods/*.js                  15 種方法（estimate / apply）；net.js = 深度模型共同外殼；diverout.js = Diverout_sim
+lib/methods/*.js                  16 種方法（estimate / apply）；net.js = 深度模型共同外殼；diverout.js = Diverout_sim
 lib/temporal.js                   時間一致性
 lib/keyframes.js  lib/edit.js     關鍵幀內插；剪輯（旋轉、裁切比例、速度、時間裁切、聲音重取樣）
 lib/help.js                       每個滑桿的說明（往小／往大／適用／建議）
