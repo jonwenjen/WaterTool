@@ -8,6 +8,8 @@
 //   --dump <目錄>：另外把每個方法的輸出格與參考格存成原始 RGB（給 tools/perceptual_eval.py 算 LPIPS 與 FID）。
 //   --extra：另外評測 lib/methods/mobile-nets.js 的候選模型（不在 App 清單裡）。
 //   --clips a,b：只跑這幾段（中斷後補跑用）；--out 的 JSON 每跑完一段就更新一次。
+//   --pre id=目錄：網路輸出事先算好（多格輸入的影片網路，例如 tools/uvenet_infer.py 的 UVENet），
+//                  目錄裡是每段 N × 256 × 256 × 3 的 uint8；之後的擬合與影片模式與其他深度模型相同。
 import { execFileSync } from 'node:child_process';
 import { readdirSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -28,8 +30,10 @@ const out = opt('--out', '');
 const dump = opt('--dump', '');
 const KEYS = +opt('--keys', 0); // >0：深度模型只在每 KEYS 秒的關鍵幀跑網路，中間內插（App 的快速匯出）
 const EXTRA = args.includes('--extra') ? (await import('../lib/methods/mobile-nets.js')).CANDIDATES : [];
-register(...EXTRA);
-const ALL = [...METHODS, ...EXTRA];
+const PRE = Object.fromEntries(args.flatMap((a, i) => (args[i - 1] === '--pre' ? [a.split('=')] : [])));
+const PREM = Object.keys(PRE).length ? (await import('../lib/methods/mobile-nets.js')).PRECOMPUTED.filter((m) => PRE[m.id]) : [];
+register(...EXTRA, ...PREM);
+const ALL = [...METHODS, ...EXTRA, ...PREM];
 const methods = ['input', ...ALL.map((m) => m.id)].filter((id) => !only || only.split(',').includes(id));
 
 function decode(file) {
@@ -72,7 +76,20 @@ if (dump) {
   for (const clip of data) save('reference', clip.name, clip.ref);
 }
 
-const ctx = { runNet: await nodeRunNet() };
+const runNet = await nodeRunNet();
+let cur = { clip: '', i: 0 }; // 目前處理到哪一段、哪一格（給 --pre 取對應的網路輸出）
+const preCache = {};
+const ctx = {
+  runNet: async (file, x, w, h) => {
+    if (!file.startsWith('pre:')) return runNet(file, x, w, h);
+    const id = file.slice(4), key = `${id}/${cur.clip}`;
+    preCache[key] ??= readFileSync(join(PRE[id], `${cur.clip}.u8`));
+    const buf = preCache[key], n = w * h, o = cur.i * n * 3, y = new Float32Array(3 * n);
+    if (o + n * 3 > buf.length) throw new Error(`${key}: 第 ${cur.i} 格超出預先算好的輸出`);
+    for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) y[c * n + i] = buf[o + i * 3 + c] / 255;
+    return y;
+  },
+};
 const meanLum = (im) => C.mean(C.gray(im));
 const results = {};
 // 參考影片本身的亮度閃爍（作為對照）
@@ -93,9 +110,13 @@ for (const id of methods) {
     let keys = m && m.keyframes ? keysFromFrames(clip.raw, clip.fps, defaults(m)) : null;
     if (m && m.needsModel && KEYS > 0) {
       keys = [];
-      for (const i of keyframeIndices(clip.raw.length, clip.fps, KEYS)) keys.push({ t: i / clip.fps, g: await m.estimate(clip.raw[i], defaults(m), ctx) });
+      for (const i of keyframeIndices(clip.raw.length, clip.fps, KEYS)) {
+        cur = { clip: clip.name, i };
+        keys.push({ t: i / clip.fps, g: await m.estimate(clip.raw[i], defaults(m), ctx) });
+      }
     }
     for (const [i, f] of clip.raw.entries()) {
+      cur = { clip: clip.name, i };
       if (id === 'input') { outs.push(f); continue; }
       const opts = keys ? { method: id, params: defaults(m), g: interpKeys(keys, i / clip.fps) }
         : { method: id, params: defaults(m), video: { dt: 1 / clip.fps, tau: 0.5, deflicker: 0.7, every: 1 } };

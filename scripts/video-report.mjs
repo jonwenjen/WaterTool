@@ -1,11 +1,12 @@
 // 把 bench-video.mjs 的 JSON（可多個，平行跑的分段結果）合併成 Markdown 表格。
 //   node scripts/video-report.mjs a.json b.json … [--perc perceptual.json] > docs/results-video.md
 // --perc：tools/perceptual_eval.py 的結果（LPIPS、FID），加進表格。
+// --ms：另一份 bench-video 結果，只取它的每格 ms（例如機器沒有其他工作時量的；平行跑很多評測時 ms 會偏高）。
 import { readFileSync } from 'node:fs';
 import { METHODS } from '../lib/methods/index.js';
 
-const argv = process.argv.slice(2), pi = argv.indexOf('--perc');
-const perc = pi >= 0 ? JSON.parse(readFileSync(argv.splice(pi, 2)[1], 'utf8')) : {};
+const argv = process.argv.slice(2), take = (k) => { const i = argv.indexOf(k); return i >= 0 ? JSON.parse(readFileSync(argv.splice(i, 2)[1], 'utf8')) : null; };
+const perc = take('--perc') || {}, msFrom = take('--ms');
 const all = {};
 // 多個 JSON（平行分段、或 --clips 補跑的結果）逐方法、逐段合併
 for (const f of argv) for (const [id, r] of Object.entries(JSON.parse(readFileSync(f, 'utf8')))) all[id] = { ...all[id], ...r };
@@ -13,12 +14,12 @@ const ref = all.reference;
 const clips = Object.keys(ref);
 const name = (id) => (id === 'input' ? '（未處理）' : METHODS.find((m) => m.id === id)?.name || id);
 const ids = ['input', ...METHODS.map((m) => m.id)].filter((id) => all[id]);
-const avg = (id, k) => {
+const avg = (id, k, src = all) => {
   let s = 0, n = 0;
-  for (const c of clips) { const r = all[id][c]; if (!r) continue; s += r[k] * r.frames; n += r.frames; }
+  for (const c of Object.keys(src[id] || {})) { const r = src[id][c]; if (!clips.includes(c) || r[k] === undefined) continue; s += r[k] * r.frames; n += r.frames; }
   return s / n;
 };
-const rows = ids.map((id) => ({ id, psnr: avg(id, 'psnr'), ssim: avg(id, 'ssim'), lpips: perc[id]?.lpips, fid: perc[id]?.fid, et: avg(id, 'etemp'), fl: avg(id, 'flicker'), ms: avg(id, 'ms') }));
+const rows = ids.map((id) => ({ id, psnr: avg(id, 'psnr'), ssim: avg(id, 'ssim'), lpips: perc[id]?.lpips, fid: perc[id]?.fid, et: avg(id, 'etemp'), fl: avg(id, 'flicker'), ms: avg(id, 'ms', msFrom || all) }));
 const hasP = rows.some((r) => r.lpips !== undefined);
 const opt = (v, d) => (v === undefined ? '—' : v.toFixed(d));
 rows.sort((a, b) => b.psnr - a.psnr);
@@ -41,7 +42,7 @@ out.push('|---|---|---|---|' + (hasP ? '---|---|' : '') + '---|---|---|');
 let rank = 0;
 for (const r of rows) {
   const isIn = r.id === 'input';
-  out.push(`| ${isIn ? '—' : ++rank} | ${name(r.id)} | ${f(r.psnr)} | ${f(r.ssim, 3)} |${hasP ? ` ${opt(r.lpips, 3)} | ${opt(r.fid, 1)} |` : ''} ${f(r.et)} | ${f(r.fl)} | ${isIn ? '—' : f(r.ms, 0)} |`);
+  out.push(`| ${isIn ? '—' : ++rank} | ${name(r.id)} | ${f(r.psnr)} | ${f(r.ssim, 3)} |${hasP ? ` ${opt(r.lpips, 3)} | ${opt(r.fid, 1)} |` : ''} ${f(r.et)} | ${f(r.fl)} | ${isIn || Number.isNaN(r.ms) ? '—' : f(r.ms, 0)} |`);
 }
 out.push('\n### 各段 PSNR\n');
 out.push('| 方法 | ' + clips.join(' | ') + ' |');

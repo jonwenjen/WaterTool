@@ -3,9 +3,9 @@
 // （bench-video.mjs、tools/perceptual_eval.py、net-speed.mjs 的輸出；EUVP 的 PSNR/SSIM 由 --euvp 指定的 JSON 提供）
 import { readFileSync } from 'node:fs';
 import { METHODS, register } from '../lib/methods/index.js';
-import { CANDIDATES } from '../lib/methods/mobile-nets.js';
+import { CANDIDATES, PRECOMPUTED } from '../lib/methods/mobile-nets.js';
 
-register(...CANDIDATES);
+register(...CANDIDATES, ...PRECOMPUTED);
 const groups = {};
 let key = null;
 for (const a of process.argv.slice(2)) {
@@ -17,7 +17,7 @@ const merge = (files = []) => { // 逐方法合併（同一方法的分段結果
   return all;
 };
 const video = merge(groups.video), perc = merge(groups.perc), eperc = merge(groups['euvp-perc']), speed = merge(groups.speed), euvp = merge(groups.euvp);
-const ALL = [...METHODS, ...CANDIDATES], isNew = new Set(['fgdpa', ...CANDIDATES.map((m) => m.id)]); // FGDPA 已加入 App，仍標為這次評測的新模型
+const ALL = [...METHODS, ...CANDIDATES, ...PRECOMPUTED], isNew = new Set(['fgdpa', ...CANDIDATES.map((m) => m.id), ...PRECOMPUTED.map((m) => m.id)]); // FGDPA 已加入 App，仍標為這次評測的新模型
 const name = (id) => (id === 'input' ? '（未處理）' : ALL.find((m) => m.id === id).name);
 const clips = Object.keys(video.reference);
 const avg = (id, k) => {
