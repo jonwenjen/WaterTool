@@ -85,9 +85,30 @@ FID 是「一組對一組」的分佈距離，240 格對 2048 維特徵屬於小
 | LU2Net | Yang et al., arXiv 2406.14973（2024，LSUI 訓練） | [MrYangHaodong/LU2Net](https://github.com/MrYangHaodong/LU2Net) | 未聲明 |
 | LiteEnhanceNet | Zhang et al., Expert Systems with Applications 2024 | [zhangsong1213/LiteEnhanceNet](https://github.com/zhangsong1213/LiteEnhanceNet) | 未聲明 |
 | AquaFastNet | Hasib et al., 2026 修訂稿（UIEB／EUVP） | [ShahidHasib586/AquaFastNet](https://github.com/ShahidHasib586/AquaFastNet) | Apache-2.0 |
+| PIC-UIE | arXiv 2609.33318（2026，YCbCr 空間預測轉換、深度只用於訓練監督，UIEB 微調） | [OceanZ9639/PIC-UIE](https://github.com/OceanZ9639/PIC-UIE) | 未聲明 |
 
 **有找到但用不了的**：UVENet（Du et al., Neural Networks 2025，多格輸入的水下影片網路）、UnDIVE（WACV 2025）、HDAMS-Net（2025）、Shallow-UWnet——
 權重只放在 Google Drive 或沒有公開；Mamba 類（WaterMamba 等）需要自訂 CUDA 運算子，無法轉成手機瀏覽器可跑的 ONNX。
+
+#### 其他候選的手機可行性（PGMamba、DM-UW、UCS-Net、Rep-UWnet、UIVE）
+
+沒有公開權重的模型無法評測還原品質，只能用原作程式（隨機權重）量計算量與速度。計算量 = 256×256 輸入的乘加次數（`torch.utils.flop_counter`）；
+速度 = 這台機器 ONNX Runtime CPU 單執行緒（量的時候機器上還有其他評測在跑，只看數量級；手機瀏覽器的 WASM 通常更慢）。對照：FGDPA 0.25 GMACs、PIC-UIE 0.05 GMACs。
+
+| 模型 | 出處 | 程式／權重 | 參數 | 計算量（256²） | 實測速度 | 結論 |
+|---|---|---|---|---|---|---|
+| PGMamba | AAAI 2026（物理模型引導的全域 Mamba） | 程式在 GitHub，**權重未公開** | 460 萬 | 14.7 GMACs | 128²：2.8 秒；256²：約 11 秒 | ✗ 不適合即時 |
+| DM-UW | Tang et al., ACM MM 2023（Transformer 擴散模型＋非均勻跳步取樣） | 程式在 GitHub，權重只在 Google Drive | 1,071 萬 | 每步 66.9 GMACs × 10 步 = 669 GMACs | 每步 4.2 秒 → 每格約 42 秒 | ✗ 不可行 |
+| UCS-Net | — | 找不到論文程式或權重 | — | — | — | 無法評估 |
+| Rep-UWnet | Liu et al., Sensors 2024（RepVGG 重參數化，以 Shallow-UWnet 為基礎） | **沒有公開程式與權重** | 45 萬（論文） | 估計約 30 GMACs（全解析度卷積、不降採樣：參數 × 像素數） | — | ✗ 計算量比 PGMamba 還大 |
+| UIVE | Luo et al., Frontiers in Marine Science 2025（無 BN 殘差塊 U-Net＋自適應亮度後處理） | **沒有公開程式與權重** | — | — | 論文：640×480 36 FPS（論文自己的硬體） | 可能可行，但無法驗證 |
+
+- **PGMamba**：Mamba 的選擇性掃描需要 CUDA 運算子（`mamba_ssm`）。這裡改寫成分塊 cumsum 掃描（與參考實作差 < 10⁻⁶），
+  隨機 Gumbel 路由改成 argmax、`torch.sort` 改成 topk 後才能轉出 ONNX（固定尺寸、8–13 千個節點、約 20 MB）。即使轉得出來也是 FGDPA 的約 58 倍計算量；
+  原作的 Gumbel 路由每格隨機，影片會閃爍。最多只能偶爾處理關鍵幀，而且沒有權重可用。
+- **DM-UW**：擴散模型要在雜訊上反覆去噪，預設已用演化搜尋出的 10 步（原本 2,000 步），每步仍要跑完整的 1,071 萬參數網路。
+- **Rep-UWnet、UIVE**：論文有公開，但沒有程式和權重（MDPI、Frontiers 的頁面在這個環境也連不到）；PIC-UIE 有權重，已完整評測（見下表）。
+- 若之後拿到 UCS-Net 的論文或程式連結，可以用同樣的方式再評估。
 
 **轉換與驗證**（`scripts/export_mobile_onnx.py`）：直接用原作倉庫的網路定義與權重（以 weights_only 方式載入，不執行檔案裡的程式），
 各模型原作測試流程的後處理一起放進 ONNX；ONNX 與原作 PyTorch 的輸出最大差 < 2×10⁻⁶。FGDPA 的 32×32 FFT 改成等價的 DFT 矩陣乘法、
