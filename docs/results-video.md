@@ -70,6 +70,87 @@ FID 是「一組對一組」的分佈距離，240 格對 2048 維特徵屬於小
 | IBLA 模糊度＋光吸收 | 0.391 | 0.218 | 0.251 | 0.608 | 0.403 |
 | UDCP 水下暗通道 | 0.372 | 0.191 | 0.493 | 0.630 | 0.575 |
 
+## 手機級新模型（2024–2026）評測
+
+**怎麼挑的**：搜尋 2024–2026 年的水下影像／影片增強研究，條件是（1）參數少、全卷積、能轉 ONNX 在手機瀏覽器跑，（2）權重公開且這個環境下載得到。
+這個環境只連得到 GitHub（Google Drive、百度網盤、Hugging Face 都被擋），所以只能選權重放在 GitHub 倉庫裡的模型。
+
+| 模型 | 出處 | 權重 | 授權 |
+|---|---|---|---|
+| MobileIE | Yan et al., ICCV 2025（手機即時影像增強，含水下任務的 UIEB 權重） | [AVC2-UESTC/MobileIE](https://github.com/AVC2-UESTC/MobileIE) | Apache-2.0 |
+| FGDPA | Zhang et al., ICME 2026（以 MobileIE 為基礎、加頻域引導注意力，UIEB 訓練） | [LethyZhang/FGDPA](https://github.com/LethyZhang/FGDPA) | Apache-2.0 |
+| LU2Net | Yang et al., arXiv 2406.14973（2024，LSUI 訓練） | [MrYangHaodong/LU2Net](https://github.com/MrYangHaodong/LU2Net) | 未聲明 |
+| LiteEnhanceNet | Zhang et al., Expert Systems with Applications 2024 | [zhangsong1213/LiteEnhanceNet](https://github.com/zhangsong1213/LiteEnhanceNet) | 未聲明 |
+| AquaFastNet | Hasib et al., 2026 修訂稿（UIEB／EUVP） | [ShahidHasib586/AquaFastNet](https://github.com/ShahidHasib586/AquaFastNet) | Apache-2.0 |
+
+**有找到但用不了的**：UVENet（Du et al., Neural Networks 2025，多格輸入的水下影片網路）、UnDIVE（WACV 2025）、HDAMS-Net（2025）、Shallow-UWnet——
+權重只放在 Google Drive 或沒有公開；Mamba 類（WaterMamba 等）需要自訂 CUDA 運算子，無法轉成手機瀏覽器可跑的 ONNX。
+
+**轉換與驗證**（`scripts/export_mobile_onnx.py`）：直接用原作倉庫的網路定義與權重（以 weights_only 方式載入，不執行檔案裡的程式），
+各模型原作測試流程的後處理一起放進 ONNX；ONNX 與原作 PyTorch 的輸出最大差 < 2×10⁻⁶。FGDPA 的 32×32 FFT 改成等價的 DFT 矩陣乘法、
+LU2Net 的 same 填補改成明確填補（ONNX Runtime 不支援 same 加空洞卷積），兩者與原作相同到 10⁻⁷。參數量與論文一致（MobileIE 4,075、FGDPA 4,234）。
+AquaFastNet 釋出的實作是 309,862 個參數（論文表格寫 107,670，作者 README 已註明這個落差）。
+
+**評測方式**：與上面 15 種方法完全相同——同一組 UVE-38K 影片（5 段、240 格）、App 預設的影片模式（時間穩定化開），
+網路在長邊 256 跑（原作壓成 256×256 測試的 LU2Net、LiteEnhanceNet 同樣壓成 256×256），再擬合成局部色彩轉換套回原解析度。
+LPIPS、FID 的算法同上一節（`tools/perceptual_eval.py`）。🆕 = 新模型；排名依 PSNR（同分看 SSIM）。
+
+| 排名 | 方法 | PSNR ↑ | SSIM ↑ | LPIPS ↓ | FID ↓ | E_t ↓ | 亮度閃爍 |
+|---|---|---|---|---|---|---|---|
+| 1 | WaterNet（UIEB 基準網路） | 20.05 | 0.612 | 0.252 | 69.5 | 10.72 | 0.63 |
+| 2 | Five A⁺ 超輕量網路 | 19.96 | 0.618 | 0.262 | 77.5 | 10.69 | 0.44 |
+| 3 | UIEC²-Net RGB＋HSV 雙色彩空間 | 19.79 | 0.616 | 0.251 | 71.3 | 10.72 | 0.47 |
+| 4 | NU²-Net（Underwater Ranker） | 19.69 | 0.616 | 0.255 | 74.5 | 10.76 | 0.49 |
+| 5 | Diverout_sim（DIVEROUT 調色模擬） | 19.65 | 0.589 | 0.223 | 59.2 | 11.22 | 0.71 |
+| 6 | **FGDPA 頻域引導雙路注意力** 🆕 | 19.39 | 0.612 | 0.281 | 73.6 | 10.90 | 0.47 |
+| 7 | **LiteEnhanceNet 深度可分離卷積** 🆕 | 19.11 | 0.606 | 0.298 | 72.6 | 11.14 | 0.30 |
+| 8 | UVE-Net（UVEB 影片增強） | 18.75 | 0.591 | 0.316 | 77.9 | 11.22 | 0.36 |
+| 9 | **MobileIE（手機即時影像增強）** 🆕 | 18.61 | 0.605 | 0.282 | 72.8 | 10.94 | 0.46 |
+| 10 | **AquaFastNet 輕量 U-Net＋SE** 🆕 | 18.55 | 0.605 | 0.263 | 75.7 | 10.69 | 0.63 |
+| 11 | RGHS 相對直方圖拉伸 | 18.30 | 0.547 | 0.272 | 62.6 | 12.25 | 0.72 |
+| 12 | **LU2Net 輕量 U-Net** 🆕 | 18.27 | 0.595 | 0.276 | 77.5 | 11.04 | 0.56 |
+| 13 | FUnIE-GAN 深度學習 | 17.93 | 0.576 | 0.355 | 91.2 | 11.60 | 0.32 |
+| 14 | UWCNN 水下場景先驗 CNN | 17.80 | 0.575 | 0.391 | 119.3 | 11.50 | 0.51 |
+| 15 | MLLE 最小色損＋局部對比 | 17.56 | 0.511 | 0.447 | 128.2 | 15.95 | 0.57 |
+| — | （未處理） | 16.84 | 0.575 | 0.361 | 78.5 | 11.08 | 0.32 |
+| 16 | 色彩平衡＋多尺度融合 | 16.24 | 0.578 | 0.280 | 98.7 | 11.59 | 0.33 |
+| 17 | Sea-thru（ULAP 深度） | 14.80 | 0.469 | 0.410 | 139.3 | 14.40 | 1.02 |
+| 18 | ULAP 光衰減先驗復原 | 13.44 | 0.500 | 0.411 | 107.8 | 12.28 | 0.48 |
+| 19 | IBLA 模糊度＋光吸收 | 13.32 | 0.426 | 0.374 | 86.1 | 12.95 | 0.83 |
+| 20 | UDCP 水下暗通道 | 11.01 | 0.367 | 0.452 | 93.7 | 13.74 | 0.59 |
+
+#### 手機適用性（5 個新模型與 App 現有的深度模型）
+
+推論時間 = onnxruntime-web WASM 單執行緒、只算網路本身（`scripts/net-speed.mjs`，這台機器上量的；手機瀏覽器同樣用 WASM，實際速度依手機而定）。
+「720p 原畫面」= 不縮小、直接把 1280×704（約 720p，FGDPA 要求邊長為 32 的倍數）整張丟進網路（只有可變尺寸的模型能這樣跑）。
+
+| 方法 | 參數量 | 模型檔 | 推論（App 用的尺寸） | 推論（720p 原畫面） | EUVP PSNR | EUVP LPIPS |
+|---|---|---|---|---|---|---|
+| **MobileIE** 🆕 | 4,075 | 20 KB | 65.8 ms（256×160） | 843 ms | 19.05 | 0.260 |
+| **FGDPA** 🆕 | 4,234 | 34 KB | 43.3 ms（256×160） | 1050 ms | 19.24 | 0.259 |
+| **LU2Net** 🆕 | 175,571 | 712 KB | 401.2 ms（256×256） | — | 21.44 | 0.251 |
+| **LiteEnhanceNet** 🆕 | 13,688 | 65 KB | 286.5 ms（256×256） | — | 19.21 | 0.263 |
+| **AquaFastNet** 🆕 | 309,862 | 1.2 MB | 167.4 ms（256×160） | 3314 ms | 23.30 | 0.233 |
+| WaterNet | 109 萬 | 4.2 MB | 6559.3 ms（256×144） | — | 19.05 | 0.266 |
+| Five A+ | 9 千 | 832 KB | 901.2 ms（256×256） | — | 19.13 | 0.274 |
+| UIEC²-Net | 53 萬 | 2.1 MB | 8395.0 ms（256×256） | — | 19.43 | 0.265 |
+| NU²-Net | 315 萬 | 12.0 MB | 1937.0 ms（256×256） | — | 19.81 | 0.264 |
+| UVE-Net | 53 萬 | 2.1 MB | 409.0 ms（320×176） | — | 18.94 | 0.280 |
+| FUnIE-GAN | 702 萬 | 13.4 MB | 370.5 ms（256×160） | — | 21.92 | 0.248 |
+| UWCNN | 4 萬 | 160 KB | 1399.9 ms（256×256） | — | 17.44 | 0.362 |
+
+**注意**：AquaFastNet 釋出的權重是用 EUVP 測試集（515 張）挑選的最佳回合，EUVP 照片的分數有主場優勢（同 FUnIE-GAN）；
+LU2Net 用 LSUI 訓練（LSUI 收錄了部分 EUVP、UIEB 的圖）。UVE-38K 影片對 5 個新模型都是沒看過的資料。
+
+**結論**：
+- **FGDPA 是品質與速度兼顧的最佳選擇**：只有 4,234 個參數（34 KB），影片 PSNR 19.39、SSIM 0.612，排第 6，只比第 1 名 WaterNet（109 萬參數）低 0.66 dB、SSIM 相同；
+  推論 43 ms，是 WaterNet 的 1/150、App 現有最快的深度模型 FUnIE-GAN（370 ms）的 1/8.5。不縮小直接跑 720p 約 1 秒（這台機器、WASM 單執行緒）。
+- **LiteEnhanceNet** 排第 7（PSNR 19.11），亮度閃爍 0.30 是所有深度模型最低；**MobileIE**（4,075 參數，66 ms）PSNR 18.61、SSIM 0.605，與 AquaFastNet 相當。
+- **AquaFastNet** 時間誤差 E_t 10.69 與 Five A⁺ 並列最好、LPIPS 0.263 是新模型裡最低；EUVP 分數最高但有主場優勢（見上）。**LU2Net** 在影片上是 5 個裡最弱的（18.27）。
+- 5 個新模型都比原片好得多（PSNR +1.4–2.6 dB、LPIPS 0.263–0.298 vs 0.361），但沒有一個超過 App 現有的前 4 名（WaterNet、Five A⁺、UIEC²-Net、NU²-Net）；
+  優勢在速度與大小：新模型推論 43–401 ms，前 4 名 901–8,395 ms；FGDPA、MobileIE 的模型檔只有 20–34 KB（前 4 名 0.8–12 MB）。
+- 授權：MobileIE、FGDPA、AquaFastNet 是 Apache-2.0，可以直接加進 App；LU2Net、LiteEnhanceNet 的倉庫沒有授權聲明，暫不散布它們的權重。
+
 ## 深度模型的快速匯出：關鍵幀＋內插 vs 逐幀
 
 App 的「深度模型影片匯出：快速」只在每 0.5 秒（或 1 秒）的關鍵幀跑網路，中間格把前後關鍵幀的色彩轉換係數線性內插。

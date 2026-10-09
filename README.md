@@ -28,6 +28,10 @@ node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json --dump d && pyth
 node scripts/video-report.mjs v.json --perc p.json > docs/results-video.md
 node scripts/euvp-dump.mjs <EUVP data/test 目錄> e && python tools/perceptual_eval.py e .cache/perceptual pe.json
 PERC_EUVP=pe.json node scripts/bench.mjs <EUVP data/test 目錄> > docs/results.md
+# 手機級新模型：原作倉庫 clone 到同一個目錄 → 轉 ONNX（models/eval/）→ 評測（--extra）→ 速度 → 報告表格
+python scripts/export_mobile_onnx.py <倉庫目錄> models/eval
+node scripts/bench-video.mjs <UVE-38K imgs 目錄> --extra --methods mobileie,fgdpa,lu2net,liteenhancenet,aquafastnet --out m.json --dump d
+node scripts/net-speed.mjs --extra > s.json && node scripts/mobile-report.mjs --video v.json m.json --perc p.json … --speed s.json
 ```
 
 **發佈成網站**：推到 `main` 後由 `.github/workflows/pages.yml` 部署到 GitHub Pages
@@ -370,6 +374,22 @@ Diverout_sim 以每 1 秒的關鍵幀＋線性內插處理（同 DIVEROUT「高�
 - 權重：LPIPS 的線性層與官方 lpips 套件逐位元相同，官方範例圖算出 0.722 / 0.138；FID 用與原始 TF 版一致的 InceptionV3（torch-fidelity）。
   App 的方法清單仍依 PSNR / SSIM 排序，四項分數都標在每個方法旁。
 
+**手機級新模型（2024–2026）**：另外評測了 5 個權重公開、適合手機即時執行的新模型（完整表格與方法見
+[`docs/results-video.md`](docs/results-video.md)「手機級新模型」一節；尚未加入 App）：
+
+| 模型 | 參數量 | 影片 PSNR / SSIM | LPIPS / FID | 推論（WASM 單執行緒） |
+|---|---|---|---|---|
+| FGDPA（ICME 2026） | 4,234 | **19.39** / **0.612** | 0.281 / 73.6 | **43 ms** |
+| LiteEnhanceNet（ESWA 2024） | 13,688 | 19.11 / 0.606 | 0.298 / 72.6 | 287 ms |
+| MobileIE（ICCV 2025） | 4,075 | 18.61 / 0.605 | 0.282 / 72.8 | 66 ms |
+| AquaFastNet（2026 修訂稿） | 309,862 | 18.55 / 0.605 | **0.263** / 75.7 | 167 ms |
+| LU2Net（2024） | 175,571 | 18.27 / 0.595 | 0.276 / 77.5 | 401 ms |
+| 對照：WaterNet / Five A⁺ | 109 萬 / 9 千 | 20.05 / 0.612、19.96 / 0.618 | 0.252 / 69.5、0.262 / 77.5 | 6559 / 901 ms |
+
+FGDPA 只有 4 千參數（34 KB）就排到 20 種方法的第 6、只比第 1 名 WaterNet 低 0.66 dB（SSIM 相同），推論快 150 倍；
+5 個新模型都沒超過 App 現有的前 4 名，優勢是速度（新模型 43–401 ms，前 4 名 901–8,395 ms）與大小。MobileIE、FGDPA、AquaFastNet 是 Apache-2.0，可以加進 App；
+LU2Net、LiteEnhanceNet 的倉庫沒有授權聲明，暫不散布權重。
+
 **合成場景**（已知真值；水上場景經修正成像模型退化成藍水/綠水/混濁）——平均色差 ΔE（越低越好）：
 
 | 方法 | 平均 ΔE | 每幀（640×360，Node 單執行緒） |
@@ -432,6 +452,8 @@ scripts/bench-video.mjs           評測：UVE-38K 成對影片（video-report.m
 tools/perceptual.py               LPIPS（AlexNet v0.1）與 FID（InceptionV3）；perceptual_eval.py 算評測輸出的分數
 tools/lpips_weights.py            LPIPS 權重轉換（只讀 numpy 陣列的安全 pickle 讀取）；scripts/get_perceptual_weights.sh 下載權重
 scripts/euvp-dump.mjs             EUVP 各方法輸出存檔（給 LPIPS）；bench-video.mjs --dump 存影片輸出
+scripts/export_mobile_onnx.py     手機級新模型（MobileIE、FGDPA、LU2Net、LiteEnhanceNet、AquaFastNet）→ ONNX，與原作比對
+lib/methods/mobile-nets.js        上述模型的評測用設定（不在 App 清單）；net-speed.mjs、mobile-report.mjs、dump-scores.mjs 為評測工具
 tools/diverout_cc.py              Diverout_sim 命令列版（Python + numpy + OpenCV + ffmpeg）：影片、照片、資料夾
 docs/diverout-model.md            DIVEROUT 調色反推模型說明（參數、來源測試、準確度、限制）
 test/  scripts/                   單元測試、評測、端對端、靜態伺服器

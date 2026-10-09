@@ -34,8 +34,8 @@ for (const r of rows) {
   out.push(`| ${r.id === 'input' ? '—' : ++rank} | ${nm} | ${f(r.psnr)} | ${f(r.ssim, 3)} | ${f(r.lpips, 3)} | ${f(r.fid, 1)} | ${f(r.et)} | ${f(r.fl)} |`);
 }
 out.push('\n#### 手機適用性（5 個新模型與 App 現有的深度模型）\n');
-out.push('推論時間 = onnxruntime-web WASM 單執行緒、只算網路本身（`scripts/net-speed.mjs`；手機瀏覽器同樣用 WASM，速度約為這台機器的 1/2–1/4）。');
-out.push('「720p 原畫面」= 不縮小、直接把 1280×720 整張丟進網路（只有可變尺寸的模型能這樣跑）。\n');
+out.push('推論時間 = onnxruntime-web WASM 單執行緒、只算網路本身（`scripts/net-speed.mjs`，這台機器上量的；手機瀏覽器同樣用 WASM，實際速度依手機而定）。');
+out.push('「720p 原畫面」= 不縮小、直接把 1280×704（約 720p，FGDPA 要求邊長為 32 的倍數）整張丟進網路（只有可變尺寸的模型能這樣跑）。\n');
 out.push('| 方法 | 參數量 | 模型檔 | 推論（App 用的尺寸） | 推論（720p 原畫面） | EUVP PSNR | EUVP LPIPS |');
 out.push('|---|---|---|---|---|---|---|');
 const params = { mobileie: '4,075', fgdpa: '4,234', liteenhancenet: '13,688', lu2net: '175,571', aquafastnet: '309,862', fiveaplus: '9 千', uwcnn: '4 萬', uiec2net: '53 萬', nu2net: '315 萬', funie: '702 萬', waternet: '109 萬', uvenet: '53 萬' };
