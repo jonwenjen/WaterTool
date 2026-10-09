@@ -5,8 +5,9 @@
 // 每個方法以 App 預設的影片模式處理（時間穩定化開：τ 0.5 s、去閃爍 0.7，每格都重新估計），量測：
 //   PSNR / SSIM（與參考格）、時間誤差 E_t = 平均 |(O_t − O_{t−1}) − (R_t − R_{t−1})|（0–255，越低越接近參考影片的時間變化）、
 //   亮度閃爍 = 相鄰格平均亮度差（0–255）。
+//   --dump <目錄>：另外把每個方法的輸出格與參考格存成原始 RGB（給 tools/perceptual_eval.py 算 LPIPS 與 FID）。
 import { execFileSync } from 'node:child_process';
-import { readdirSync, writeFileSync } from 'node:fs';
+import { readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import * as C from '../lib/core.js';
 import { METHODS, defaults } from '../lib/methods/index.js';
@@ -22,6 +23,7 @@ const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] :
 const N = +opt('--frames', 48);
 const only = opt('--methods', '');
 const out = opt('--out', '');
+const dump = opt('--dump', '');
 const KEYS = +opt('--keys', 0); // >0：深度模型只在每 KEYS 秒的關鍵幀跑網路，中間內插（App 的快速匯出）
 const methods = ['input', ...METHODS.map((m) => m.id)].filter((id) => !only || only.split(',').includes(id));
 
@@ -45,6 +47,21 @@ const data = clips.map((name) => {
   return { name, raw: raw.frames.slice(0, n), ref: ref.frames.slice(0, n), fps: raw.fps };
 });
 
+// 原始 RGB：N 格 × h × w × 3（uint8），尺寸寫在 meta.json
+const toU8 = (frames) => {
+  const { w, h } = frames[0], buf = Buffer.alloc(frames.length * w * h * 3);
+  frames.forEach((f, t) => { for (let i = 0; i < w * h; i++) for (let c = 0; c < 3; c++) buf[(t * w * h + i) * 3 + c] = Math.round(Math.min(1, Math.max(0, f.c[c][i])) * 255); });
+  return buf;
+};
+const save = (id, clip, frames) => {
+  mkdirSync(join(dump, id), { recursive: true });
+  writeFileSync(join(dump, id, `${clip}.u8`), toU8(frames));
+};
+if (dump) {
+  writeFileSync(join(mkdirSync(dump, { recursive: true }) || dump, 'meta.json'), JSON.stringify(Object.fromEntries(data.map((c) => [c.name, { w: c.raw[0].w, h: c.raw[0].h, frames: c.raw.length }]))));
+  for (const clip of data) save('reference', clip.name, clip.ref);
+}
+
 const ctx = { runNet: await nodeRunNet() };
 const meanLum = (im) => C.mean(C.gray(im));
 const results = {};
@@ -67,6 +84,7 @@ for (const id of methods) {
       outs.push((await proc.run(f, opts)).out);
     }
     const ms = (performance.now() - t0) / clip.raw.length;
+    if (dump) save(id, clip.name, outs);
     let p = 0, s = 0, et = 0, fl = 0;
     for (let t = 0; t < outs.length; t++) {
       p += psnr(outs[t], clip.ref[t]);

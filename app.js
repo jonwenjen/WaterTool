@@ -936,8 +936,10 @@ async function runCompare() {
 }
 
 // ---------------- 方法與參數 ----------------
+/** 影片評測分數：[PSNR, SSIM, LPIPS, FID] → 顯示文字 */
+const scoreText = ([ps, ss, lp, fid]) => `PSNR ${ps.toFixed(2)} · SSIM ${ss.toFixed(3)}` + (lp === undefined ? '' : ` · LPIPS ${lp.toFixed(3)} · FID ${fid.toFixed(1)}`);
 function renderMethods() {
-  $('methodsNote').textContent = `依同一組水下影片（UVE-38K 5 段成對影片）的 PSNR / SSIM 由好到壞排序；數字越高越接近參考影片（未處理的原片為 PSNR ${RAW_SCORE[0].toFixed(2)} · SSIM ${RAW_SCORE[1].toFixed(3)}）。`;
+  $('methodsNote').textContent = `依同一組水下影片（UVE-38K 5 段成對影片）的 PSNR / SSIM 由好到壞排序。PSNR、SSIM 越高、LPIPS（感知距離）與 FID（整體分佈距離）越低，越接近參考影片；未處理的原片為 ${scoreText(RAW_SCORE)}。`;
   const box = $('methods');
   box.innerHTML = '';
   METHODS.forEach((m, i) => {
@@ -946,8 +948,7 @@ function renderMethods() {
     b.className = 'method';
     b.setAttribute('role', 'radio');
     b.setAttribute('aria-checked', String(m.id === state.method));
-    const [ps, ss] = SCORES[m.id];
-    b.innerHTML = `<span class="n">${i + 1}</span><span class="t">${m.name}<span class="k">${m.kind}</span></span><span class="s">${m.cite}<span class="score">PSNR ${ps.toFixed(2)} · SSIM ${ss.toFixed(3)}</span></span>`;
+    b.innerHTML = `<span class="n">${i + 1}</span><span class="t">${m.name}<span class="k">${m.kind}</span></span><span class="s">${m.cite}<span class="score">${scoreText(SCORES[m.id])}</span></span>`;
     b.onclick = () => selectMethod(m.id);
     box.append(b);
   });
@@ -2008,8 +2009,7 @@ function renderAbout() {
   METHODS.forEach((m, i) => {
     const info = INFO[m.id];
     const d = document.createElement('details');
-    const [ps, ss] = SCORES[m.id];
-    d.innerHTML = `<summary>${i + 1}. ${m.name} <span class="score">PSNR ${ps.toFixed(2)} · SSIM ${ss.toFixed(3)}</span></summary>
+    d.innerHTML = `<summary>${i + 1}. ${m.name} <span class="score">${scoreText(SCORES[m.id])}</span></summary>
       <p>${info.summary}</p>
       <p>論文：<a href="${info.paper[1]}" target="_blank" rel="noopener">${m.cite}（${info.paper[0]}）</a></p>
       <p>程式碼：${info.code.map(([t, u]) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`).join('、')}</p>`;

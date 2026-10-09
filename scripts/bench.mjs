@@ -1,6 +1,7 @@
 // 評測：node scripts/bench.mjs [EUVP 目錄] > docs/results.md
 // 1. 合成真值（3 種水質）：與真值的 CIEDE76 色差、UIQM、UCIQE、速度
 // 2. EUVP 真實照片（若提供目錄 data/test：A 原圖、GTr_A 參考）：UIQM、UCIQE、與參考的色差
+//    PERC_EUVP=<json>：加上 LPIPS 欄（scripts/euvp-dump.mjs → tools/perceptual_eval.py 的結果）
 // 3. 影片時間一致性：合成平移影片，逐幀 vs 時間穩定（參數 EMA + 去閃爍）的扭曲誤差與亮度閃爍
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import jpeg from 'jpeg-js';
@@ -62,17 +63,20 @@ if (euvp && existsSync(`${euvp}/A`)) {
     return C.fromRGBA(j.data, j.width, j.height);
   };
   const imgs = names.map((n) => [load(`${euvp}/A/${n}`), existsSync(`${euvp}/GTr_A/${n}`) ? load(`${euvp}/GTr_A/${n}`) : null]);
-  log('| 方法 | PSNR ↑ | SSIM ↑ | ΔE ↓ | UIQM ↑ | UCIQE ↑ |');
-  log('|---|---|---|---|---|---|');
-  const score = (outs) => {
+  const perc = process.env.PERC_EUVP ? JSON.parse(readFileSync(process.env.PERC_EUVP, 'utf8')) : null;
+  if (perc) log('LPIPS（AlexNet v0.1，越低越像參考）由 `scripts/euvp-dump.mjs` + `tools/perceptual_eval.py` 計算；23 張太少，不算 FID（分佈距離需要大量樣本，見影片評測）。\n');
+  log('| 方法 | PSNR ↑ | SSIM ↑ |' + (perc ? ' LPIPS ↓ |' : '') + ' ΔE ↓ | UIQM ↑ | UCIQE ↑ |');
+  log('|---|---|---|' + (perc ? '---|' : '') + '---|---|---|');
+  const score = (outs, id) => {
     const ref = outs.map((o, i) => [o, imgs[i][1]]).filter((x) => x[1]);
-    return `${f(avg(ref.map(([o, r]) => psnr(o, r))))} | ${f(avg(ref.map(([o, r]) => ssim(o, r))), 3)} | ${f(avg(ref.map(([o, r]) => deltaE(o, r))), 1)} | ${f(avg(outs.map((o) => uiqm(o).uiqm)))} | ${f(avg(outs.map(uciqe)), 3)}`;
+    const lp = perc ? ` ${perc[id] ? f(perc[id].lpips, 3) : '—'} |` : '';
+    return `${f(avg(ref.map(([o, r]) => psnr(o, r))))} | ${f(avg(ref.map(([o, r]) => ssim(o, r))), 3)} |${lp} ${f(avg(ref.map(([o, r]) => deltaE(o, r))), 1)} | ${f(avg(outs.map((o) => uiqm(o).uiqm)))} | ${f(avg(outs.map(uciqe)), 3)}`;
   };
-  if (!ONLY) log(`| （未處理） | ${score(imgs.map((x) => x[0]))} |`);
+  if (!ONLY) log(`| （未處理） | ${score(imgs.map((x) => x[0]), 'input')} |`);
   for (const m of LIST) {
     const outs = [];
     for (const [img] of imgs) outs.push((await new Processor(ctx).run(img, { method: m.id, params: defaults(m) })).out);
-    log(`| ${m.name} | ${score(outs)} |`);
+    log(`| ${m.name} | ${score(outs, m.id)} |`);
   }
 }
 
