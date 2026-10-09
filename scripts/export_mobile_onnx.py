@@ -8,6 +8,7 @@
   mryanghaodong_lu2net        LU2Net（2024）                   LightUNet_170.pth
   zhangsong1213_liteenhancenet LiteEnhanceNet（ESWA 2024）     snapshots/model_epoch_99.ckpt
   ShahidHasib586_aquafastnet  AquaFastNet（2026 修訂稿）        runs/uie_fastunet_base32/best.pt
+  OceanZ9639_pic-uie          PIC-UIE（2026）                   weights/pic_uie.pth
 
 網路結構直接用原作倉庫的程式（純 torch.nn 定義），權重以 weights_only 方式載入（不執行檔案裡的程式）。
 各模型原作測試流程的後處理一起放進 ONNX（輸出都已在 [0,1]）：
@@ -15,6 +16,10 @@
   LU2Net：torchvision save_image(normalize=True) = 整張圖 min-max 正規化。
 FGDPA 的注意力用到 32×32 的 2D FFT 幅度；ONNX Runtime Web 不一定支援 DFT 運算，這裡改成等價的 DFT 矩陣乘法（cos/sin），
 並把「平均池化到 32×32」改成 reshape 後取平均（輸入邊長為 32 的倍數時兩者完全相同）。
+PIC-UIE 的色彩共變異數匹配用 torch.linalg.eigh 算 3×3 矩陣的 −1/2 次方，ONNX 沒有特徵分解 →
+改成 Newton–Schulz 迭代（只用矩陣乘法），並把逐項指定的下三角矩陣改成 stack。
+
+只轉其中幾個：環境變數 ONLY=pic_uie,fgdpa
 """
 import importlib.util
 import os
@@ -167,12 +172,73 @@ def aquafastnet():
     return net.eval(), net
 
 
+# ---------- 6. PIC-UIE（YCbCr 分解：小編碼器預測轉換，再套回原解析度） ----------
+def newton_schulz_isqrt(A, iters):
+    """對稱正定 A（[B,n,n]）的 A^(−1/2)；以 Frobenius 範數縮放後保證收斂"""
+    n = A.shape[-1]
+    I = torch.eye(n, dtype=A.dtype).expand_as(A)
+    s = torch.sqrt((A * A).sum(dim=(1, 2), keepdim=True))
+    Y, Z = A / s, I
+    for _ in range(iters):
+        T = 0.5 * (3.0 * I - Z @ Y)
+        Y, Z = Y @ T, T @ Z
+    return Z / torch.sqrt(s)
+
+
+def pic_uie():
+    root = os.path.join(C, 'OceanZ9639_pic-uie')
+    sys.path.insert(0, root)
+    from pic_uie.model import PICUIE
+    sys.path.pop(0)
+    st = torch.load(os.path.join(root, 'weights', 'pic_uie.pth'), map_location='cpu', weights_only=True)
+    a = st['args']
+    kw = dict(c=a['c'], knots=a['knots'], chroma_ds=a['chroma_ds'], chroma=a['chroma'], clut_size=a['clut_size'],
+              depth_cond_chroma=a['depth_cond_chroma'], tone=a['tone'], grid_d=a['grid_d'], refine_y=a['refine_y'],
+              lum=a['lum'], y_histeq=a['y_histeq'], histeq_bins=a['histeq_bins'], ccm=a['ccm'],
+              y_rangenorm=a['y_rangenorm'], rangenorm_grid=a['rangenorm_grid'], colormatch=a['colormatch'],
+              in_norm=a['in_norm'], global_stats=a['global_stats'])
+    ref = PICUIE(**kw)
+    ref.load_state_dict(st['model'], strict=True)
+
+    class Out(nn.Module):
+        def __init__(self, net):
+            super().__init__()
+            self.net = net
+
+        def forward(self, x):
+            return self.net(x)['out']
+
+    class PICUIEOnnx(PICUIE):
+        @staticmethod
+        def _cov_match(ycc, cmatch, eps=1e-4):
+            B, Cc, H, W = ycc.shape
+            mu_t = cmatch[:, 0:3].view(B, 3, 1)
+            l = cmatch[:, 3:9]
+            z = torch.zeros_like(l[:, 0])
+            L_t = torch.stack([torch.stack([l[:, 0], z, z], 1),
+                               torch.stack([l[:, 1], l[:, 2], z], 1),
+                               torch.stack([l[:, 3], l[:, 4], l[:, 5]], 1)], 1)
+            alpha = torch.sigmoid(cmatch[:, 9]).view(B, 1, 1)
+            x = ycc.reshape(B, Cc, -1)
+            mu = x.mean(dim=2, keepdim=True)
+            xc = x - mu
+            cov = (xc @ xc.transpose(1, 2)) / (x.shape[2] - 1) + eps * torch.eye(Cc)
+            x_w = newton_schulz_isqrt(cov, 30) @ xc
+            out = (1 - alpha) * x + alpha * (L_t @ x_w + mu_t)
+            return out.reshape(B, Cc, H, W)
+
+    net = PICUIEOnnx(**kw)
+    net.load_state_dict(st['model'], strict=True)
+    return Out(net).eval(), Out(ref).eval()
+
+
 SPECS = [  # (名稱, 建構, 後處理, ONNX 是否動態尺寸, 測試尺寸)
     ('mobileie', mobileie, Clip, True, [(256, 256), (192, 256)]),
     ('fgdpa', fgdpa, Clip, True, [(256, 256), (192, 256)]),
     ('lu2net', lu2net, MinMax, False, [(256, 256)]),
     ('liteenhancenet', liteenhancenet, Clip, False, [(256, 256)]),
     ('aquafastnet', aquafastnet, lambda n: n, True, [(256, 256), (192, 256)]),
+    ('pic_uie', pic_uie, lambda n: n, True, [(256, 256), (144, 256), (360, 640)]),
 ]
 
 
@@ -187,7 +253,10 @@ def test_image(h, w):
 if __name__ == '__main__':
     import onnxruntime as ort
     os.makedirs(OUT, exist_ok=True)
+    only = os.environ.get('ONLY')
     for name, build, post, dyn, sizes in SPECS:
+        if only and name not in only.split(','):
+            continue
         net, ref = build()
         model = post(net).eval()
         params = sum(p.numel() for p in net.parameters())
