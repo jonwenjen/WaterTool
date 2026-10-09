@@ -11,7 +11,7 @@ const all = {};
 // 多個 JSON（平行分段、或 --clips 補跑的結果）逐方法、逐段合併
 for (const f of argv) for (const [id, r] of Object.entries(JSON.parse(readFileSync(f, 'utf8')))) all[id] = { ...all[id], ...r };
 const ref = all.reference;
-const clips = Object.keys(ref);
+const clips = Object.keys(ref).sort();
 const name = (id) => (id === 'input' ? '（未處理）' : METHODS.find((m) => m.id === id)?.name || id);
 const ids = ['input', ...METHODS.map((m) => m.id)].filter((id) => all[id]);
 const avg = (id, k, src = all) => {
@@ -22,7 +22,7 @@ const avg = (id, k, src = all) => {
 const rows = ids.map((id) => ({ id, psnr: avg(id, 'psnr'), ssim: avg(id, 'ssim'), lpips: perc[id]?.lpips, fid: perc[id]?.fid, et: avg(id, 'etemp'), fl: avg(id, 'flicker'), ms: avg(id, 'ms', msFrom || all) }));
 const hasP = rows.some((r) => r.lpips !== undefined);
 const opt = (v, d) => (v === undefined ? '—' : v.toFixed(d));
-rows.sort((a, b) => b.psnr - a.psnr);
+rows.sort((a, b) => b.psnr - a.psnr || b.ssim - a.ssim);
 const f = (v, d = 2) => v.toFixed(d);
 const frames = clips.reduce((s, c) => s + ref[c].frames, 0);
 const counts = clips.map((c) => ref[c].frames);
@@ -37,6 +37,7 @@ if (hasP) {
   out.push('LPIPS（Zhang et al., CVPR 2018，AlexNet v0.1）= 每格與參考格的深度特徵感知距離，越低越像；FID（Heusel et al., NeurIPS 2017）= 全部 ' + frames + ' 格輸出與全部參考格的 InceptionV3 特徵分佈距離，越低整體觀感越接近參考。');
   out.push('FID 是「一組對一組」的分佈距離，' + frames + ' 格對 2048 維特徵屬於小樣本，數值會偏高、只適合方法間比較（不能和論文裡用上萬張圖算的 FID 直接比）。計算：`tools/perceptual_eval.py`。\n');
 }
+if (msFrom) out.push('每格 ms 是 Node 單執行緒 CPU、320 px 的整套處理時間，取自機器沒有其他工作時的另一次評測（這次 917 格的評測平行跑了很多工作，時間偏高）。\n');
 out.push('| 排名 | 方法 | PSNR ↑ | SSIM ↑ |' + (hasP ? ' LPIPS ↓ | FID ↓ |' : '') + ' E_t ↓ | 亮度閃爍 | 每格 ms |');
 out.push('|---|---|---|---|' + (hasP ? '---|---|' : '') + '---|---|---|');
 let rank = 0;
