@@ -6,11 +6,12 @@
 //   PSNR / SSIM（與參考格）、時間誤差 E_t = 平均 |(O_t − O_{t−1}) − (R_t − R_{t−1})|（0–255，越低越接近參考影片的時間變化）、
 //   亮度閃爍 = 相鄰格平均亮度差（0–255）。
 //   --dump <目錄>：另外把每個方法的輸出格與參考格存成原始 RGB（給 tools/perceptual_eval.py 算 LPIPS 與 FID）。
+//   --extra：另外評測 lib/methods/mobile-nets.js 的候選模型（不在 App 清單裡）。
 import { execFileSync } from 'node:child_process';
 import { readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import * as C from '../lib/core.js';
-import { METHODS, defaults } from '../lib/methods/index.js';
+import { METHODS, defaults, register } from '../lib/methods/index.js';
 import { psnr, ssim } from '../lib/metrics.js';
 import { Processor } from '../lib/pipeline.js';
 import { nodeRunNet } from './node-net.mjs';
@@ -25,7 +26,10 @@ const only = opt('--methods', '');
 const out = opt('--out', '');
 const dump = opt('--dump', '');
 const KEYS = +opt('--keys', 0); // >0：深度模型只在每 KEYS 秒的關鍵幀跑網路，中間內插（App 的快速匯出）
-const methods = ['input', ...METHODS.map((m) => m.id)].filter((id) => !only || only.split(',').includes(id));
+const EXTRA = args.includes('--extra') ? (await import('../lib/methods/mobile-nets.js')).CANDIDATES : [];
+register(...EXTRA);
+const ALL = [...METHODS, ...EXTRA];
+const methods = ['input', ...ALL.map((m) => m.id)].filter((id) => !only || only.split(',').includes(id));
 
 function decode(file) {
   const info = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate', '-of', 'csv=p=0', file]).toString().trim().split(',');
@@ -70,7 +74,7 @@ for (const id of methods) {
   for (const clip of data) {
     const proc = new Processor(ctx), outs = [];
     const t0 = performance.now();
-    const m = METHODS.find((x) => x.id === id);
+    const m = ALL.find((x) => x.id === id);
     // 關鍵幀方法（Diverout_sim）：先看過整段，關鍵幀＋線性內插（同 App 與 DIVEROUT）
     let keys = m && m.keyframes ? keysFromFrames(clip.raw, clip.fps, defaults(m)) : null;
     if (m && m.needsModel && KEYS > 0) {
