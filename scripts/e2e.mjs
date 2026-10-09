@@ -24,6 +24,9 @@ const ok = (cond, msg) => {
   if (!cond) throw new Error('失敗：' + msg);
   console.log('✓ ' + msg);
 };
+const { METHODS } = await import('../lib/methods/index.js');
+// 點清單上某個方法的按鈕（清單依評測分數排序，用方法 ID 找位置）
+const pick = (id) => page.locator('.method').nth(METHODS.findIndex((m) => m.id === id)).click();
 const shot = async (o) => {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(200);
@@ -49,15 +52,19 @@ try {
   await shot({ path: join(TMP, 'demo-split.png') });
 
   // 每種方法都能在介面上跑
-  for (let i = 0; i < 7; i++) {
-    await page.locator('.method').nth(i).click();
+  // （清單依評測分數排序，按鈕位置會變，所以依方法 ID 找按鈕）
+  const ids = await page.evaluate(() => [...document.querySelectorAll('.method .t')].map((e) => e.firstChild.textContent));
+  const classic = METHODS.filter((m) => !m.needsModel && !m.keyframes), nets = METHODS.filter((m) => m.needsModel);
+  ok(ids.length === METHODS.length && METHODS.every((m, i) => ids[i] === m.name), '方法清單依評測分數排序');
+  for (const m of classic) {
+    await pick(m.id);
     await waitIdle();
   }
-  ok(true, '7 種傳統方法都能在介面上處理');
+  ok(true, `${classic.length} 種傳統方法都能在介面上處理`);
 
   // 7 個深度學習模型（下載模型、WASM 推論）
-  for (let i = 7; i < 14; i++) {
-    await page.locator('.method').nth(i).click();
+  for (const m of nets) {
+    await pick(m.id);
     const id = await page.evaluate(() => window.__watertool.state.method);
     await page.waitForFunction(() => {
       const s = window.__watertool.state;
@@ -74,8 +81,8 @@ try {
   await shot({ path: join(TMP, 'compare.png'), fullPage: true });
   await page.click('[data-view=split]');
 
-  // 示範匯出 MP4
-  await page.locator('.method').nth(0).click();
+  // 示範匯出 MP4（色彩平衡融合）
+  await pick('ancuti');
   await waitIdle();
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 300000 }), page.click('#export')]);
   const demoMp4 = join(TMP, 'demo-export.mp4');
@@ -94,7 +101,7 @@ try {
     await waitIdle();
     await shot({ path: join(OUT, 'video-split.png') });
     ok(true, '真實影片載入、播放、還原');
-    await page.locator('.method').nth(11).click(); // Five A⁺：深度模型的快速匯出
+    await pick('fiveaplus'); // Five A⁺：深度模型的快速匯出
     await waitIdle();
     await page.selectOption('#outRes', '720');
     const [dl2] = await Promise.all([page.waitForEvent('download', { timeout: 600000 }), page.click('#export')]);
@@ -107,7 +114,7 @@ try {
     ok(le && le.fast && le.frames === +src, `深度模型快速匯出：${le && le.keys} 個關鍵幀跑網路、${le && le.frames} 格由 GPU 套用`);
 
     // Diverout_sim：先分析整支片的關鍵幀 → 暫停預覽、GPU 色彩矩陣播放、匯出都用關鍵幀內插
-    await page.locator('.method').nth(14).click();
+    await pick('diverout');
     await page.waitForFunction(() => window.__watertool.keyInfo().ready, null, { timeout: 120000 });
     await waitIdle();
     const ki = await page.evaluate(() => window.__watertool.keyInfo());
@@ -129,7 +136,7 @@ try {
     await dl4.saveAs(dOut);
     const dInfo = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', dOut]).toString().trim();
     ok(dInfo === src, `Diverout_sim 影片匯出幀數與原片相同（${dInfo}）`);
-    await page.locator('.method').nth(0).click();
+    await pick('ancuti');
     await waitIdle();
   }
 

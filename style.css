@@ -159,6 +159,8 @@ a { color: var(--accent); }
 .method[aria-checked=true] .n { background: var(--accent); color: #032024; }
 .method .t { font-weight: 600; }
 .method .s { color: var(--muted); font-size: 12px; }
+.method .score, .about .score { display: block; color: var(--accent2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.about summary .score { display: inline-block; white-space: nowrap; margin-left: 6px; font-weight: 400; }
 .method .k { color: var(--accent2); font-size: 11px; margin-left: 6px; }
 
 .controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }

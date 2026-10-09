@@ -36,6 +36,8 @@ node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/
 1. **開啟影片／照片**（或拖進畫面）。沒有素材可按 **合成示範**，會產生一段已知真值的合成水下影片。
 2. 右側選 **還原方法**，調整參數；畫面上拖曳分割線比較原始 / 還原。
    每個滑桿下方的「ⓘ 說明」寫了從最小到最大的效果、適用情境與建議數值（內容在 [`lib/help.js`](lib/help.js)）。
+   方法清單與「方法與出處」依同一組影片（UVE-38K 5 段成對影片）的 PSNR / SSIM 由好到壞排序，每個方法旁標出分數
+   （分數在 [`lib/methods/index.js`](lib/methods/index.js) 的 `SCORES`，單元測試會核對與 [`docs/results-video.md`](docs/results-video.md) 一致）。
 3. **全部比較** 會把目前畫面用所有方法各算一次，並列顯示（含 UIQM / UCIQE 與耗時），點一下即切換。
 4. **播放很順**：播放時由 GPU（WebGL2）把色彩即時套到每一格影片，速度跟原片一樣（測試中 30 fps 影片維持約 30 fps）；
    色彩本身由背景執行緒用完整演算法在小圖（長邊 320）上持續重算，再擬合成局部色彩轉換交給 GPU。

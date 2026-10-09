@@ -1,5 +1,5 @@
 // WaterTool 介面：載入影片/照片 → 背景執行緒還原 → 分割比較 → 匯出。
-import { METHODS, byId, defaults } from './lib/methods/index.js';
+import { METHODS, byId, defaults, SCORES, RAW_SCORE } from './lib/methods/index.js';
 import { INFO } from './lib/methods/info.js';
 import { HELP, paramHelp, helpHtml } from './lib/help.js';
 import { ASPECTS, DEFAULT_EDIT, MIN_ZOOM, editActive, cropActive, cropRect, keepSegments, outDuration, nextKept, Resampler, even, drawEdited } from './lib/edit.js';
@@ -937,6 +937,7 @@ async function runCompare() {
 
 // ---------------- 方法與參數 ----------------
 function renderMethods() {
+  $('methodsNote').textContent = `依同一組水下影片（UVE-38K 5 段成對影片）的 PSNR / SSIM 由好到壞排序；數字越高越接近參考影片（未處理的原片為 PSNR ${RAW_SCORE[0].toFixed(2)} · SSIM ${RAW_SCORE[1].toFixed(3)}）。`;
   const box = $('methods');
   box.innerHTML = '';
   METHODS.forEach((m, i) => {
@@ -945,7 +946,8 @@ function renderMethods() {
     b.className = 'method';
     b.setAttribute('role', 'radio');
     b.setAttribute('aria-checked', String(m.id === state.method));
-    b.innerHTML = `<span class="n">${i + 1}</span><span class="t">${m.name}<span class="k">${m.kind}</span></span><span class="s">${m.cite}</span>`;
+    const [ps, ss] = SCORES[m.id];
+    b.innerHTML = `<span class="n">${i + 1}</span><span class="t">${m.name}<span class="k">${m.kind}</span></span><span class="s">${m.cite}<span class="score">PSNR ${ps.toFixed(2)} · SSIM ${ss.toFixed(3)}</span></span>`;
     b.onclick = () => selectMethod(m.id);
     box.append(b);
   });
@@ -2006,7 +2008,8 @@ function renderAbout() {
   METHODS.forEach((m, i) => {
     const info = INFO[m.id];
     const d = document.createElement('details');
-    d.innerHTML = `<summary>${i + 1}. ${m.name}</summary>
+    const [ps, ss] = SCORES[m.id];
+    d.innerHTML = `<summary>${i + 1}. ${m.name} <span class="score">PSNR ${ps.toFixed(2)} · SSIM ${ss.toFixed(3)}</span></summary>
       <p>${info.summary}</p>
       <p>論文：<a href="${info.paper[1]}" target="_blank" rel="noopener">${m.cite}（${info.paper[0]}）</a></p>
       <p>程式碼：${info.code.map(([t, u]) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`).join('、')}</p>`;
