@@ -9,6 +9,7 @@
   zhangsong1213_liteenhancenet LiteEnhanceNet（ESWA 2024）     snapshots/model_epoch_99.ckpt
   ShahidHasib586_aquafastnet  AquaFastNet（2026 修訂稿）        runs/uie_fastunet_base32/best.pt
   OceanZ9639_pic-uie          PIC-UIE（2026）                   weights/pic_uie.pth
+  mkartik_shallow-uwnet       Shallow-UWnet（AAAI 2021）        model.ckpt（倉庫 README 的 Google Drive 連結，另外下載放進倉庫目錄）
 
 網路結構直接用原作倉庫的程式（純 torch.nn 定義），權重以 weights_only 方式載入（不執行檔案裡的程式）。
 各模型原作測試流程的後處理一起放進 ONNX（輸出都已在 [0,1]）：
@@ -232,6 +233,17 @@ def pic_uie():
     return Out(net).eval(), Out(ref).eval()
 
 
+# ---------- 7. Shallow-UWnet（檔案是整個 pickled 模型物件，類別在 model.py） ----------
+def shallowuwnet():
+    m = load_file('model', os.path.join(C, 'mkartik_shallow-uwnet', 'model.py'))
+    allow = [m.UWnet, m.ConvBlock, nn.Conv2d, nn.ReLU, nn.Dropout2d, nn.Sequential, set]
+    with torch.serialization.safe_globals(allow):
+        obj = torch.load(os.path.join(C, 'mkartik_shallow-uwnet', 'model.ckpt'), map_location='cpu', weights_only=True)
+    net = m.UWnet()
+    net.load_state_dict(obj.state_dict(), strict=True)
+    return net.eval(), obj.eval()
+
+
 SPECS = [  # (名稱, 建構, 後處理, ONNX 是否動態尺寸, 測試尺寸)
     ('mobileie', mobileie, Clip, True, [(256, 256), (192, 256)]),
     ('fgdpa', fgdpa, Clip, True, [(256, 256), (192, 256)]),
@@ -239,6 +251,7 @@ SPECS = [  # (名稱, 建構, 後處理, ONNX 是否動態尺寸, 測試尺寸)
     ('liteenhancenet', liteenhancenet, Clip, False, [(256, 256)]),
     ('aquafastnet', aquafastnet, lambda n: n, True, [(256, 256), (192, 256)]),
     ('pic_uie', pic_uie, lambda n: n, True, [(256, 256), (144, 256), (360, 640)]),
+    ('shallowuwnet', shallowuwnet, Clip, False, [(256, 256)]),  # 原作 test.py 壓成 256×256，save_image 會 clamp 到 [0,1]
 ]
 
 
