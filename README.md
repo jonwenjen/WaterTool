@@ -7,7 +7,7 @@
 - **不上傳、不需伺服器**：所有運算在本機瀏覽器的背景執行緒完成。
 - **可安裝成 App**（PWA）：手機「加到主畫面」、桌面 Chrome「安裝」，安裝後可離線使用。
 - **15 種方法**：7 種傳統（物理模型 / 增強）+ 7 個深度學習模型（FUnIE-GAN、WaterNet、UVE-Net 與 4 個 UIEB 訓練模型，ONNX 在瀏覽器執行）+ **Diverout_sim**（重現 DIVEROUT「高／超高／標準」調色）。
-- **每種方法都有客觀評測**：EUVP 真實照片與 UVE-38K 真實影片的 PSNR / SSIM、合成真值場景、閃爍量測（[`docs/results.md`](docs/results.md)、[`docs/results-video.md`](docs/results-video.md)）。
+- **每種方法都有客觀評測**：EUVP 真實照片與 UVE-38K 真實影片的 PSNR / SSIM / LPIPS（影片另有 FID）、合成真值場景、閃爍量測（[`docs/results.md`](docs/results.md)、[`docs/results-video.md`](docs/results-video.md)）。
 
 ![分割比較（左原始、右 Ancuti 融合）](docs/screenshots/video-split.png)
 
@@ -22,6 +22,12 @@ npm test             # 單元測試（核心運算、15 種方法、時間穩定
 npm run e2e -- <影片>  # 無頭 Chromium 端對端：播放、15 種方法、全部比較、7 個深度模型、Diverout_sim 關鍵幀、匯出 MP4/PNG
 node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評測（照片、合成場景）
 node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/video-report.mjs v.json > docs/results-video.md   # 影片
+# LPIPS / FID（需要 Python：torch、scipy、numpy，以及 pip install --no-deps torch-fidelity）
+bash scripts/get_perceptual_weights.sh                              # 權重下載到 .cache/perceptual
+node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json --dump d && python tools/perceptual_eval.py d .cache/perceptual p.json
+node scripts/video-report.mjs v.json --perc p.json > docs/results-video.md
+node scripts/euvp-dump.mjs <EUVP data/test 目錄> e && python tools/perceptual_eval.py e .cache/perceptual pe.json
+PERC_EUVP=pe.json node scripts/bench.mjs <EUVP data/test 目錄> > docs/results.md
 ```
 
 **發佈成網站**：推到 `main` 後由 `.github/workflows/pages.yml` 部署到 GitHub Pages
@@ -36,7 +42,7 @@ node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/
 1. **開啟影片／照片**（或拖進畫面）。沒有素材可按 **合成示範**，會產生一段已知真值的合成水下影片。
 2. 右側選 **還原方法**，調整參數；畫面上拖曳分割線比較原始 / 還原。
    每個滑桿下方的「ⓘ 說明」寫了從最小到最大的效果、適用情境與建議數值（內容在 [`lib/help.js`](lib/help.js)）。
-   方法清單與「方法與出處」依同一組影片（UVE-38K 5 段成對影片）的 PSNR / SSIM 由好到壞排序，每個方法旁標出分數
+   方法清單與「方法與出處」依同一組影片（UVE-38K 5 段成對影片）的 PSNR / SSIM 由好到壞排序，每個方法旁標出 PSNR、SSIM、LPIPS、FID
    （分數在 [`lib/methods/index.js`](lib/methods/index.js) 的 `SCORES`，單元測試會核對與 [`docs/results-video.md`](docs/results-video.md) 一致）。
 3. **全部比較** 會把目前畫面用所有方法各算一次，並列顯示（含 UIQM / UCIQE 與耗時），點一下即切換。
 4. **播放很順**：播放時由 GPU（WebGL2）把色彩即時套到每一格影片，速度跟原片一樣（測試中 30 fps 影片維持約 30 fps）；
@@ -300,54 +306,69 @@ UVEB 官方小模型（12 通道特徵、53 萬參數）：把中間格縮小 4 
 
 **EUVP 真實水下照片**（23 張，與資料集附的參考增強圖比較；↑ 越高越好、↓ 越低越好）：
 
-| 方法 | PSNR ↑ | SSIM ↑ | 色差 ΔE ↓ | UIQM ↑ |
-|---|---|---|---|---|
-| 未處理 | 17.19 | 0.680 | 23.6 | 2.73 |
-| FUnIE-GAN ※ | **21.92** | **0.708** | **13.3** | 3.23 |
-| NU²-Net | 19.81 | 0.705 | 16.9 | 3.24 |
-| UIEC²-Net | 19.43 | 0.697 | 18.0 | 3.22 |
-| Five A⁺ | 19.13 | 0.695 | 18.5 | 3.20 |
-| **WaterNet** | 19.05 | 0.698 | 17.4 | 3.22 |
-| **UVE-Net** | 18.94 | 0.677 | 17.7 | 3.13 |
-| ULAP | 18.02 | 0.678 | 19.8 | 2.99 |
-| Diverout_sim | 17.70 | 0.695 | 20.7 | 2.95 |
-| IBLA | 17.61 | 0.645 | 20.8 | 2.65 |
-| UWCNN | 17.44 | 0.653 | 21.6 | 3.09 |
-| 色彩平衡＋融合 | 16.77 | 0.695 | 24.3 | **3.46** |
-| RGHS | 15.15 | 0.627 | 25.3 | 2.67 |
-| Sea-thru（ULAP 深度） | 15.13 | 0.617 | 25.8 | 3.10 |
-| MLLE | 15.07 | 0.644 | 23.8 | 3.07 |
-| UDCP | 11.73 | 0.453 | 37.8 | 2.81 |
+| 方法 | PSNR ↑ | SSIM ↑ | LPIPS ↓ | 色差 ΔE ↓ | UIQM ↑ |
+|---|---|---|---|---|---|
+| 未處理 | 17.19 | 0.680 | 0.303 | 23.6 | 2.73 |
+| FUnIE-GAN ※ | **21.92** | **0.708** | **0.248** | **13.3** | 3.23 |
+| NU²-Net | 19.81 | 0.705 | 0.264 | 16.9 | 3.24 |
+| UIEC²-Net | 19.43 | 0.697 | 0.265 | 18.0 | 3.22 |
+| Five A⁺ | 19.13 | 0.695 | 0.274 | 18.5 | 3.20 |
+| **WaterNet** | 19.05 | 0.698 | 0.266 | 17.4 | 3.22 |
+| **UVE-Net** | 18.94 | 0.677 | 0.280 | 17.7 | 3.13 |
+| ULAP | 18.02 | 0.678 | 0.265 | 19.8 | 2.99 |
+| Diverout_sim | 17.70 | 0.695 | 0.267 | 20.7 | 2.95 |
+| IBLA | 17.61 | 0.645 | 0.276 | 20.8 | 2.65 |
+| UWCNN | 17.44 | 0.653 | 0.362 | 21.6 | 3.09 |
+| 色彩平衡＋融合 | 16.77 | 0.695 | 0.316 | 24.3 | **3.46** |
+| RGHS | 15.15 | 0.627 | 0.302 | 25.3 | 2.67 |
+| Sea-thru（ULAP 深度） | 15.13 | 0.617 | 0.336 | 25.8 | 3.10 |
+| MLLE | 15.07 | 0.644 | 0.325 | 23.8 | 3.07 |
+| UDCP | 11.73 | 0.453 | 0.417 | 37.8 | 2.81 |
 
 粗體名稱 = 第三輪新加入的 2 種。※ FUnIE-GAN 就是用 EUVP 訓練的，在這組照片上有主場優勢；
 其餘 6 個深度模型是在 UIEB / UVEB 訓練的，換到 EUVP 仍然 PSNR 全部高於未處理，除 UWCNN 外也都勝過 7 種傳統方法。
 傳統方法中只有 ULAP、IBLA 的 PSNR 高於未處理——參考圖偏向「保留水色、溫和修正」，強力去色偏的方法反而扣分。
+LPIPS（深度特徵的感知距離，越低越像參考）：FUnIE-GAN 最低（0.248，主場優勢），其次 NU²-Net、ULAP、UIEC²-Net、WaterNet、
+Diverout_sim 都在 0.264–0.267；ULAP 與 Diverout_sim 的 PSNR 只是中段，LPIPS 卻和深度模型差不多。23 張太少，不算 FID。
 
 **UVE-38K 真實水下影片**（5 段、240 格，與逐格參考影片比較；App 預設影片模式：時間穩定化開）：
 
-| 排名 | 方法 | PSNR ↑ | SSIM ↑ | 時間誤差 E_t ↓ | 每格 ms |
-|---|---|---|---|---|---|
-| 1 | **WaterNet** | **20.05** | 0.612 | 10.72 | 4872 |
-| 2 | Five A⁺ | 19.96 | **0.618** | **10.69** | 628 |
-| 3 | UIEC²-Net | 19.79 | 0.616 | 10.72 | 5555 |
-| 4 | NU²-Net | 19.69 | 0.616 | 10.76 | 1277 |
-| 5 | **Diverout_sim** | 19.65 | 0.589 | 11.22 | **5** |
-| 6 | **UVE-Net** | 18.75 | 0.591 | 11.22 | 314 |
-| 7 | RGHS | 18.30 | 0.547 | 12.25 | 44 |
-| 8 | FUnIE-GAN | 17.93 | 0.576 | 11.60 | 419 |
-| 9 | UWCNN | 17.80 | 0.575 | 11.50 | 879 |
-| 10 | MLLE | 17.56 | 0.511 | 15.95 | 127 |
-| — | 未處理 | 16.84 | 0.575 | 11.08 | — |
-| 11 | 色彩平衡＋融合 | 16.24 | 0.578 | 11.59 | 104 |
-| 12 | Sea-thru（ULAP 深度） | 14.80 | 0.469 | 14.40 | 246 |
-| 13 | ULAP | 13.44 | 0.500 | 12.28 | 27 |
-| 14 | IBLA | 13.32 | 0.426 | 12.95 | 249 |
-| 15 | UDCP | 11.01 | 0.367 | 13.74 | 31 |
+| 排名 | 方法 | PSNR ↑ | SSIM ↑ | LPIPS ↓ | FID ↓ | 時間誤差 E_t ↓ | 每格 ms |
+|---|---|---|---|---|---|---|---|
+| 1 | **WaterNet** | **20.05** | 0.612 | 0.252 | 69.5 | 10.72 | 4872 |
+| 2 | Five A⁺ | 19.96 | **0.618** | 0.262 | 77.5 | **10.69** | 628 |
+| 3 | UIEC²-Net | 19.79 | 0.616 | 0.251 | 71.3 | 10.72 | 5555 |
+| 4 | NU²-Net | 19.69 | 0.616 | 0.255 | 74.5 | 10.76 | 1277 |
+| 5 | **Diverout_sim** | 19.65 | 0.589 | **0.223** | **59.2** | 11.22 | **5** |
+| 6 | **UVE-Net** | 18.75 | 0.591 | 0.316 | 77.9 | 11.22 | 314 |
+| 7 | RGHS | 18.30 | 0.547 | 0.272 | 62.6 | 12.25 | 44 |
+| 8 | FUnIE-GAN | 17.93 | 0.576 | 0.355 | 91.2 | 11.60 | 419 |
+| 9 | UWCNN | 17.80 | 0.575 | 0.391 | 119.3 | 11.50 | 879 |
+| 10 | MLLE | 17.56 | 0.511 | 0.447 | 128.2 | 15.95 | 127 |
+| — | 未處理 | 16.84 | 0.575 | 0.361 | 78.5 | 11.08 | — |
+| 11 | 色彩平衡＋融合 | 16.24 | 0.578 | 0.280 | 98.7 | 11.59 | 104 |
+| 12 | Sea-thru（ULAP 深度） | 14.80 | 0.469 | 0.410 | 139.3 | 14.40 | 246 |
+| 13 | ULAP | 13.44 | 0.500 | 0.411 | 107.8 | 12.28 | 27 |
+| 14 | IBLA | 13.32 | 0.426 | 0.374 | 86.1 | 12.95 | 249 |
+| 15 | UDCP | 11.01 | 0.367 | 0.452 | 93.7 | 13.74 | 31 |
 
 UVE-38K 的參考影片是從 12 種增強方法挑選、再做幀間一致化的結果；GIF 預覽為 256 色，分數適合方法間互相比較。
 Diverout_sim 以每 1 秒的關鍵幀＋線性內插處理（同 DIVEROUT「高」），只是整張畫面的色階拉伸，卻排到第 5、與 NU²-Net 只差 0.04 dB，
 而且每格只要 5 ms（深度模型的百分之一）。沒了 EUVP 的主場優勢，FUnIE-GAN 掉到第 8；前 4 名都是 UIEB 訓練的模型，差距在 0.4 dB 內。
 每格 ms 是 Node 單執行緒 CPU、320 px 全方法處理；App 播放時改用 GPU 套用局部係數，不受這個速度限制。
+
+**LPIPS 與 FID 看到的排名不太一樣**：
+- **LPIPS**（Zhang et al., CVPR 2018，AlexNet v0.1）比的是深度特徵，比 PSNR 更接近人眼覺得「像不像」；**FID**（Heusel et al., NeurIPS 2017）
+  比的是全部 240 格與參考影片的整體分佈（色調、質感），不逐格對位。兩者都是越低越好。
+- **Diverout_sim 兩項都是第一**（LPIPS 0.223、FID 59.2）。推測原因：它只做整張畫面的色階拉伸、不改變局部結構，
+  整體色調又接近參考影片（參考影片本身就是從多種增強結果中挑選的）。
+  PSNR 前 4 名的深度模型 LPIPS 都在 0.251–0.262、FID 69.5–77.5，彼此差距不大。
+- **RGHS 的 FID 排第二**（62.6），比 PSNR 的第 7 名好很多：整體色彩分佈接近參考，但逐像素位置的誤差較大。
+- **比未處理還差**（未處理：LPIPS 0.361、FID 78.5）：UWCNN、MLLE、Sea-thru、ULAP、IBLA、UDCP 兩項都比較差；
+  FUnIE-GAN 與色彩平衡＋融合的 LPIPS 好於原片（0.355、0.280），FID 卻較差（91.2、98.7）。
+- 240 格對 InceptionV3 的 2048 維特徵屬於小樣本，FID 數值偏高，只適合方法間比較，不能和論文裡用上萬張圖算的 FID 直接比。
+- 權重：LPIPS 的線性層與官方 lpips 套件逐位元相同，官方範例圖算出 0.722 / 0.138；FID 用與原始 TF 版一致的 InceptionV3（torch-fidelity）。
+  App 的方法清單仍依 PSNR / SSIM 排序，四項分數都標在每個方法旁。
 
 **合成場景**（已知真值；水上場景經修正成像模型退化成藍水/綠水/混濁）——平均色差 ΔE（越低越好）：
 
@@ -408,6 +429,9 @@ scripts/export_uieb_onnx.py       UIEB 權重 → ONNX 的轉檔腳本（需 tor
 scripts/export_extra_onnx.py      WaterNet、UVE-Net 權重 → ONNX
 scripts/bench.mjs                 評測：合成場景、EUVP 照片、合成影片閃爍 → docs/results.md
 scripts/bench-video.mjs           評測：UVE-38K 成對影片（video-report.mjs → docs/results-video.md）
+tools/perceptual.py               LPIPS（AlexNet v0.1）與 FID（InceptionV3）；perceptual_eval.py 算評測輸出的分數
+tools/lpips_weights.py            LPIPS 權重轉換（只讀 numpy 陣列的安全 pickle 讀取）；scripts/get_perceptual_weights.sh 下載權重
+scripts/euvp-dump.mjs             EUVP 各方法輸出存檔（給 LPIPS）；bench-video.mjs --dump 存影片輸出
 tools/diverout_cc.py              Diverout_sim 命令列版（Python + numpy + OpenCV + ffmpeg）：影片、照片、資料夾
 docs/diverout-model.md            DIVEROUT 調色反推模型說明（參數、來源測試、準確度、限制）
 test/  scripts/                   單元測試、評測、端對端、靜態伺服器

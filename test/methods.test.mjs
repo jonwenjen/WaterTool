@@ -120,15 +120,15 @@ test('方法清單依影片評測 PSNR / SSIM 由好到壞排序，分數（含 
   const { readFileSync } = await import('node:fs');
   const { SCORES, RAW_SCORE } = await import('../lib/methods/index.js');
   const md = readFileSync(new URL('../docs/results-video.md', import.meta.url), 'utf8');
-  const rows = [...md.matchAll(/^\| (\d+|—) \| (.+?) \| ([\d.]+) \| ([\d.]+) \|(?: ([\d.]+) \| ([\d.]+) \|)?/gm)]
+  const rows = [...md.matchAll(/^\| (\d+|—) \| (.+?) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \|/gm)]
     .map((r) => ({ rank: r[1], name: r[2], s: [+r[3], +r[4], +r[5], +r[6]] }));
   const ranked = rows.filter((r) => r.rank !== '—');
   assert.equal(ranked.length, METHODS.length);
   ranked.forEach((r, i) => {
     const m = METHODS[i];
     assert.equal(m.name, r.name, `第 ${i + 1} 名應為 ${r.name}`);
-    assert.deepEqual(SCORES[m.id], r.s.slice(0, SCORES[m.id].length), m.id);
+    assert.deepEqual(SCORES[m.id], r.s, m.id);
   });
   const raw = rows.find((r) => r.rank === '—');
-  assert.deepEqual(RAW_SCORE, raw.s.slice(0, RAW_SCORE.length));
+  assert.deepEqual(RAW_SCORE, raw.s);
 });
