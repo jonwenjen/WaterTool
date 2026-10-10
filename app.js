@@ -273,8 +273,12 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
   }
   // 影片：用 Mediabunny（WebCodecs）直接解出關鍵幀 —— 不必播放、不必跳轉 <video>。
   // 手機瀏覽器常常不替看不見的 <video> 載入資料（loadeddata 永遠不來），以前會一直停在「分析關鍵幀」。
-  // 讀檔串流失敗（Android 常見 network error）時改用分段讀取再試一次，不要退到手機上常常不能用的 <video>
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // 失敗時（Android 讀檔串流 network error；iPhone 剛匯出完大影片時解碼器、記憶體還沒釋放）改用分段讀取、
+  // 等一下再試，最多 3 次，不要太快退到手機上常常不能用的 <video>
+  let mbErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await sleep(attempt * 700);
+    if (stale()) return keys;
     let input = null;
     try {
       const MB = await loadMediabunny();
@@ -308,31 +312,36 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
     } catch (err) {
       if (stale()) return keys;
       keys.length = 0;
-      if (isReadError(err) && blobStream) {
-        console.warn('讀取原片失敗，改用分段讀取重試關鍵幀：', err);
-        blobStream = false; // 之後的讀檔（含匯出）也改用分段讀
-        continue;
-      }
-      console.warn('Mediabunny 取關鍵幀失敗，改用 <video> 跳轉：', err);
-      break;
+      mbErr = err;
+      console.warn(`Mediabunny 取關鍵幀失敗（第 ${attempt + 1} 次）：`, err);
+      blobStream = false; // 之後的讀檔（含匯出）改用較穩定的分段讀
     } finally {
       closeInput(input);
     }
   }
-  // 備援：看不見的 <video> 逐一跳轉（每一步都有逾時，不會無限等待）
-  const kv = document.createElement('video');
-  kv.muted = true;
-  kv.playsInline = true;
-  kv.preload = 'auto';
-  kv.src = video.src;
+  // 備援：<video> 逐一跳轉（每一步都有逾時，不會無限等待）。
+  // 素材就是畫面上的影片、而且沒在播放時，直接用畫面上的播放器（它已經載入資料；iPhone 不替新開、看不見的 <video> 載入資料），
+  // 用完跳回原來的時間；否則另開一個看不見的 <video>
+  const usePlayer = src === state.src && !src.headless && !!video.src && video.readyState >= 1 && !state.playing;
+  const kv = usePlayer ? video : document.createElement('video');
+  const back = video.currentTime;
+  if (!usePlayer) {
+    kv.muted = true;
+    kv.playsInline = true;
+    kv.preload = 'auto';
+    kv.src = video.src;
+  }
   const wait = (target, ev, ms, msg) => new Promise((ok, bad) => {
     const timer = setTimeout(() => bad(new Error(msg)), ms);
     target.addEventListener(ev, () => { clearTimeout(timer); ok(); }, { once: true });
   });
+  if (usePlayer) keySeeking++;
   try {
-    const loaded = wait(kv, 'loadeddata', 10000, '瀏覽器沒有載入影片資料，無法分析關鍵幀');
-    kv.load();
-    await loaded;
+    if (!usePlayer) {
+      const loaded = wait(kv, 'loadeddata', 10000, '瀏覽器沒有載入影片資料，無法分析關鍵幀');
+      kv.load();
+      await loaded;
+    }
     const D = kv.duration || video.duration || 0, times = segs ? keyframeTimesIn(segs, interval) : keyframeTimes(D, interval);
     for (const [j, time] of times.entries()) {
       if (stale()) return keys;
@@ -342,12 +351,29 @@ async function collectKeys(src, method, params, interval, edge, stale, note, msg
       await seeked;
       keys.push(await estimateAt((x, w, h) => x.drawImage(kv, 0, 0, w, h), time));
     }
+  } catch (err) {
+    // 兩種方法都失敗：把 WebCodecs 的原因也帶出來（備援的錯誤訊息常常只是結果，不是原因）
+    throw mbErr ? new Error(`${err.message}（WebCodecs 解碼：${mbErr.message}）`) : err;
   } finally {
-    kv.removeAttribute('src');
-    kv.load();
+    if (usePlayer) {
+      if (Math.abs(video.currentTime - back) > 1e-3) {
+        const done = wait(video, 'seeked', 5000, '').catch(() => {});
+        video.currentTime = back;
+        await done;
+      }
+      keySeeking--;
+      if (!state.playing && state.src === src) {
+        resetTemporal();
+        processFrame(null);
+      }
+    } else {
+      kv.removeAttribute('src');
+      kv.load();
+    }
   }
   return keys;
 }
+let keySeeking = 0; // >0：關鍵幀分析正在借用畫面上的播放器跳轉（seeked 時不要重算預覽、不要跟著剪輯區段跳）
 
 let busy = false, again = undefined; // again：處理中又收到的請求（其 dt）
 async function processFrame(dt = null) {
@@ -722,6 +748,7 @@ $('seek').addEventListener('input', async () => {
 });
 $('seek').addEventListener('change', () => { seeking = false; });
 video.addEventListener('seeked', () => {
+  if (keySeeking) return;
   if (!state.playing) {
     resetTemporal();
     processFrame(null);
@@ -1185,13 +1212,15 @@ async function exportCurrent() {
     try {
       await run();
     } catch (err) {
-      if (!isReadError(err) || !blobStream) throw err;
-      // 讀檔串流失敗：關掉所有讀檔器、改用 arrayBuffer 分段讀，再試一次
-      console.warn('讀取原片失敗，改用分段讀取重試：', err);
+      if (err && err.name === 'ConversionCanceledError') throw err;
+      // 讀檔串流失敗，或手機剛匯出完大影片、解碼器與記憶體還沒釋放：關掉所有讀檔器、改用 arrayBuffer 分段讀，
+      // 等一下再試一次（只重試一次）
+      console.warn('匯出失敗，改用較穩定的讀法重試：', err);
       blobStream = false;
       closeExportInputs();
-      $('exportNote').textContent = '讀取原片失敗，改用較穩定的讀法重試…';
+      $('exportNote').textContent = '匯出失敗（' + err.message + '），改用較穩定的讀法重試…';
       $('prog').value = 0;
+      await sleep(1500);
       await run();
     }
   } else await exportDemo();
@@ -1710,7 +1739,7 @@ function followTrim(now = false) {
   followTimer = setTimeout(updateEditUi, now ? 0 : 200);
 }
 for (const b of document.querySelectorAll('#trimFollow button')) b.onclick = () => setTrimFollow(b.dataset.follow);
-video.addEventListener('seeked', () => followTrim());
+video.addEventListener('seeked', () => { if (!keySeeking) followTrim(); });
 /**
  * 裁切預覽：整個畫面（暫停時的還原結果，已旋轉）＋裁切框，框外變暗。直接拖曳就能移動裁切位置。
  */
