@@ -187,7 +187,7 @@ function grab() {
 function readUi() {
   return {
     tOn: $('tOn').checked, tTau: +$('tTau').value, tDef: +$('tDef').value, tEvery: +$('tEvery').value,
-    mix: +$('mix').value, post: +$('post').value, prevRes: $('prevRes').value, outRes: $('outRes').value, netExp: $('netExp').value,
+    mix: +$('mix').value, post: +$('post').value, prevRes: $('prevRes').value, outRes: $('outRes').value, netExp: $('netExp').value, vcodec: $('vcodec').value,
   };
 }
 function buildOpts(dt, t = current()) {
@@ -850,6 +850,31 @@ function pause0() {
     $('play').textContent = '▶';
   }
 }
+const CODEC_NAME = { hevc: 'H.265', 'hevc+': 'H.265+', avc: 'H.264', vp9: 'VP9', av1: 'AV1' };
+const sourceNote = (src) => (src.kind === 'image' ? `照片 ${src.w}×${src.h}，匯出 PNG。`
+  : src.kind === 'demo' ? `合成示範影片，匯出 MP4（${CODEC_NAME[$('vcodec').value]}）。`
+    : `影片 ${src.w}×${src.h}，匯出 MP4（${CODEC_NAME[$('vcodec').value]}，保留音軌）。`);
+/**
+ * 匯出用的影片編碼設定 { codec, bitrate, keyFrameInterval }：使用者選的編碼優先；
+ * 這台裝置不能以這個尺寸編碼時依序改用其他編碼（記在 codecNote，完成訊息會告訴使用者）。
+ * H.265+ 不是標準編碼（監視器廠商的名稱），這裡是 H.265 的加強壓縮：位元率降一級、關鍵畫格間隔 4 秒（預設 2 秒）。
+ * H.266（VVC）目前沒有瀏覽器支援編碼，選單上只列出、不能選。
+ */
+let codecNote = '';
+async function pickVideoCodec(MB, w, h) {
+  const sel = $('vcodec').value, want = sel === 'hevc+' ? 'hevc' : sel;
+  const order = [want, ...['hevc', 'avc', 'vp9', 'av1'].filter((c) => c !== want)]; // 備援先 VP9：手機上 AV1 多半只有很慢的軟體編碼
+  const codec = await MB.getFirstEncodableVideoCodec(order, { width: w, height: h });
+  codecNote = codec && codec !== want ? `（這台裝置無法以 ${w}×${h} 編碼 ${CODEC_NAME[sel]}，已改用 ${CODEC_NAME[codec]}）` : '';
+  if (!codec) return null;
+  const plus = sel === 'hevc+' && codec === 'hevc';
+  const quality = plus ? MB.QUALITY_MEDIUM : MB.QUALITY_HIGH;
+  // AV1：Mediabunny 用「固定量化參數」模式時把 AV1 的量化值當成 0–255，但 WebCodecs 的 AV1 量化值只有 0–63，
+  // 瀏覽器一律夾到 63（最差），畫面糊成一塊塊 → AV1 改用目標位元率（依畫面大小，1080p 約 4 Mbps）
+  if (codec === 'av1') return { codec, quality: new MB.Quality({ bitrate: Math.round(4e6 * Math.pow((w * h) / (1920 * 1080), 0.95)), bitrateMode: 'variable' }), keyFrameInterval: 2, name: 'AV1' };
+  return { codec, quality, keyFrameInterval: plus ? 4 : 2, name: plus ? 'H.265+' : CODEC_NAME[codec] };
+}
+
 // ---------------- 原片存到 App 裡 ----------------
 // iPhone（與部分 Android）從相簿選的影片，App 只拿到暫時的讀取權限：過一陣子（常見於匯出一部大影片之後）就讀不到了
 // （NotReadableError：The requested file could not be read…；播放器也跟著不能跳轉）。
@@ -931,8 +956,7 @@ function setSource(src) {
   $('mute').disabled = src.kind !== 'video';
   video.hidden = src.kind !== 'video';
   $('export').disabled = batchRunning; // 多部匯出中會依序開啟各影片，按鈕維持鎖住
-  $('exportNote').textContent = src.kind === 'image' ? `照片 ${src.w}×${src.h}，匯出 PNG。` : `影片 ${src.w}×${src.h}，匯出 MP4（H.264，保留音軌）。`;
-  if (src.kind === 'demo') $('exportNote').textContent = '合成示範影片，匯出 MP4。';
+  $('exportNote').textContent = sourceNote(src);
   $('stQuality').textContent = '';
   resetTemporal();
   updateTime();
@@ -1217,7 +1241,7 @@ function bindRange(id, fmtFn) {
 const ui = saved.ui || {};
 if (ui.tOn !== undefined) $('tOn').checked = ui.tOn;
 for (const k of ['tTau', 'tDef', 'tEvery', 'mix', 'post']) if (ui[k] !== undefined) $(k).value = String(ui[k]);
-for (const k of ['prevRes', 'outRes', 'netExp']) if (ui[k] !== undefined) $(k).value = ui[k];
+for (const k of ['prevRes', 'outRes', 'netExp', 'vcodec']) if (ui[k] !== undefined && $(k).querySelector(`option[value="${ui[k]}"]:not([disabled])`)) $(k).value = ui[k];
 // 共用滑桿的說明（從小到大的效果、適用情境、建議值）
 for (const id of ['tTau', 'tDef', 'tEvery', 'mix', 'post']) $(id).closest('.ctl').insertAdjacentHTML('beforeend', helpHtml(HELP[id]));
 bindRange('tTau', (v) => (v === 0 ? '關' : `${v.toFixed(2)} 秒`));
@@ -1229,6 +1253,7 @@ $('tOn').addEventListener('change', onParamChange);
 $('prevRes').addEventListener('change', () => { save(); resetTemporal(); processFrame(null); });
 $('outRes').addEventListener('change', save);
 $('netExp').addEventListener('change', save);
+$('vcodec').addEventListener('change', () => { save(); if (state.src) $('exportNote').textContent = sourceNote(state.src); });
 $('measure').onclick = measure;
 
 // ---------------- 匯出 ----------------
@@ -1270,6 +1295,7 @@ const baseName = () => (state.src.name || 'watertool').replace(/\.[^.]+$/, '') +
 
 /** 匯出目前的素材（單部匯出與多部匯出共用）；失敗時丟出錯誤 */
 async function exportCurrent() {
+  codecNote = '';
   worker.postMessage({ type: 'reset', slot: 'export' });
   if (usesKeys()) {
     $('exportNote').textContent = '分析關鍵幀…';
@@ -1319,7 +1345,7 @@ $('export').onclick = async () => {
   const t0 = performance.now();
   try {
     await exportCurrent();
-    $('exportNote').textContent = `完成，用時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒。`;
+    $('exportNote').textContent = `完成，用時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒。` + (state.src.kind === 'image' ? '' : codecNote);
   } catch (err) {
     if (err && err.name === 'ConversionCanceledError') $('exportNote').textContent = '已取消。';
     else showError('匯出失敗：' + exportErrorText(err));
@@ -1576,8 +1602,9 @@ async function exportVideo() {
   const [ow, oh] = outSize(w, h);
   const input = openInput(MB, state.src.file);
   const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
-  const codec = await MB.getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: ow, height: oh });
-  if (!codec) throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`);
+  const enc = await pickVideoCodec(MB, ow, oh);
+  if (!enc) throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`);
+  const codec = enc.codec;
   const c = new OffscreenCanvas(ow, oh), x = c.getContext('2d', { willReadFrequently: true });
   let prevTs = null;
   const conv = await MB.Conversion.init({
@@ -1585,7 +1612,8 @@ async function exportVideo() {
     output,
     video: {
       codec,
-      quality: MB.QUALITY_HIGH,
+      quality: enc.quality,
+      keyFrameInterval: enc.keyFrameInterval,
       forceTranscode: true,
       processedWidth: ow,
       processedHeight: oh,
@@ -1601,7 +1629,7 @@ async function exportVideo() {
   if (!conv.isValid) throw new Error('無法轉檔：' + conv.discardedTracks.map((d) => d.reason).join(', '));
   conv.onProgress = (p) => {
     $('prog').value = p;
-    $('exportNote').textContent = `處理中 ${Math.round(p * 100)}%（${ow}×${oh}，${codec.toUpperCase()}）`;
+    $('exportNote').textContent = `處理中 ${Math.round(p * 100)}%（${ow}×${oh}，${enc.name}）`;
   };
   cancelExport = () => conv.cancel();
   await conv.execute();
@@ -1695,8 +1723,9 @@ async function exportVideoFast() {
   const MB = await loadMediabunny();
   const input = openInput(MB, state.src.file);
   const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
-  const codec = await MB.getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: ow, height: oh });
-  if (!codec) { col.dispose(); throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`); }
+  const enc = await pickVideoCodec(MB, ow, oh);
+  if (!enc) { col.dispose(); throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`); }
+  const codec = enc.codec;
   const c = new OffscreenCanvas(ow, oh), x = c.getContext('2d');
   let frames = 0, firstTs = null;
   const conv = await MB.Conversion.init({
@@ -1704,7 +1733,8 @@ async function exportVideoFast() {
     output,
     video: {
       codec,
-      quality: MB.QUALITY_HIGH,
+      quality: enc.quality,
+      keyFrameInterval: enc.keyFrameInterval,
       forceTranscode: true,
       processedWidth: ow,
       processedHeight: oh,
@@ -1719,7 +1749,7 @@ async function exportVideoFast() {
   if (!conv.isValid) { col.dispose(); throw new Error('無法轉檔：' + conv.discardedTracks.map((d) => d.reason).join(', ')); }
   conv.onProgress = (p) => {
     $('prog').value = 0.5 + p / 2;
-    $('exportNote').textContent = `GPU 套用並編碼 ${Math.round(p * 100)}%（${ow}×${oh}，${codec.toUpperCase()}，${col.keys.length} 個關鍵幀）`;
+    $('exportNote').textContent = `GPU 套用並編碼 ${Math.round(p * 100)}%（${ow}×${oh}，${enc.name}，${col.keys.length} 個關鍵幀）`;
   };
   cancelExport = () => conv.cancel();
   try {
@@ -2054,11 +2084,12 @@ async function exportEdited() {
   let output = null;
   try {
     if (canceled) throw cancelErr();
-    const vcodec = await MB.getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: ow, height: oh });
-    if (!vcodec) throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`);
+    const enc = await pickVideoCodec(MB, ow, oh);
+    if (!enc) throw new Error(`無法以 ${ow}×${oh} 編碼影片，請降低匯出解析度`);
+    const vcodec = enc.codec;
     output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
     const outC = new OffscreenCanvas(ow, oh), outX = outC.getContext('2d');
-    const vsrc = new MB.CanvasSource(outC, { codec: vcodec, bitrate: MB.QUALITY_HIGH });
+    const vsrc = new MB.CanvasSource(outC, { codec: vcodec, quality: enc.quality, keyFrameInterval: enc.keyFrameInterval });
     output.addVideoTrack(vsrc);
     let asrc = null;
     if (at) {
@@ -2087,7 +2118,7 @@ async function exportEdited() {
         await vsrc.add(ot, Math.max(iv, gap / speed));
         frames++;
         $('prog').value = p0 + (1 - p0) * Math.min(1, ot / total);
-        $('exportNote').textContent = `剪輯並編碼 ${Math.round(Math.min(1, ot / total) * 100)}%（${ow}×${oh}，${vcodec.toUpperCase()}）`;
+        $('exportNote').textContent = `剪輯並編碼 ${Math.round(Math.min(1, ot / total) * 100)}%（${ow}×${oh}，${enc.name}）`;
       }
       if (asink) await addAudioSegment(MB, asink, asrc, t0, a, b, base / speed, speed, () => canceled);
       if (canceled) throw cancelErr();
@@ -2142,9 +2173,9 @@ async function exportDemo() {
   c.height = h;
   const x = c.getContext('2d', { willReadFrequently: true });
   const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new MB.BufferTarget() });
-  const codec = await MB.getFirstEncodableVideoCodec(['avc', 'vp9', 'av1'], { width: w, height: h });
-  if (!codec) throw new Error('此瀏覽器無可用的影片編碼器');
-  const src = new MB.CanvasSource(c, { codec, bitrate: MB.QUALITY_HIGH });
+  const enc = await pickVideoCodec(MB, w, h);
+  if (!enc) throw new Error('此瀏覽器無可用的影片編碼器');
+  const src = new MB.CanvasSource(c, { codec: enc.codec, quality: enc.quality, keyFrameInterval: enc.keyFrameInterval });
   output.addVideoTrack(src, { frameRate: demo.fps });
   await output.start();
   let canceled = false;

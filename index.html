@@ -151,7 +151,15 @@
           <div class="ctl"><label for="outRes">匯出解析度</label>
             <select id="outRes"><option value="0">原始</option><option value="2160">4K（長邊 3840）</option><option value="1080" selected>1080p</option><option value="720">720p</option></select></div>
           <div class="ctl"><label for="netExp">影片匯出方式</label>
-            <select id="netExp"><option value="0.5" selected>快速：每 0.5 秒完整計算一次，GPU 套用</option><option value="1">更快：每 1 秒完整計算一次</option><option value="0">逐格完整計算（最慢）</option></select></div>
+            <select id="netExp"><option value="0.1">精細：每 0.1 秒完整計算一次，GPU 套用</option><option value="0.5" selected>快速：每 0.5 秒完整計算一次，GPU 套用</option><option value="1">更快：每 1 秒完整計算一次</option><option value="0">逐格完整計算（最慢）</option></select></div>
+          <div class="ctl"><label for="vcodec">影片編碼</label>
+            <select id="vcodec">
+              <option value="avc">H.264（相容性最好）</option>
+              <option value="hevc" selected>H.265 / HEVC（檔案約為 H.264 的一半）</option>
+              <option value="hevc+">H.265+（加強壓縮：位元率較低、關鍵畫格每 4 秒，檔案更小）</option>
+              <option value="vvc" disabled>H.266 / VVC（瀏覽器尚不支援編碼）</option>
+              <option value="av1">AV1（壓縮最好；編碼較慢，較舊的手機可能不支援）</option>
+            </select></div>
         </div>
         <div class="row">
           <button class="btn primary" id="export" type="button" disabled>匯出</button>
