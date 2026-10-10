@@ -682,6 +682,7 @@ function play() {
   }
 }
 function pause() {
+  setTimeout(applyLocalCopy, 0);
   state.playing = false;
   $('play').textContent = '▶';
   $('play').setAttribute('aria-label', '播放');
@@ -849,7 +850,77 @@ function pause0() {
     $('play').textContent = '▶';
   }
 }
+// ---------------- 原片存到 App 裡 ----------------
+// iPhone（與部分 Android）從相簿選的影片，App 只拿到暫時的讀取權限：過一陣子（常見於匯出一部大影片之後）就讀不到了
+// （NotReadableError：The requested file could not be read…；播放器也跟著不能跳轉）。
+// 開啟影片時就趁還讀得到，在背景把它複製到 App 自己的儲存空間（OPFS），之後播放與匯出都讀這份副本；換開別的影片時刪掉。
+const localCopies = new WeakSet(); // 已經是 App 內副本的檔案（多部匯出的副本、這裡的副本）：不用再複製
+let mainCopy = null; // 進行中或完成的副本：{ src, id, stop, local }
+let pendingLocal = null; // 複製完成時正在匯出或播放：等結束再換
+let exporting = false;
+if (navigator.storage && navigator.storage.getDirectory) navigator.storage.getDirectory().then((r) => r.removeEntry('src', { recursive: true })).catch(() => {});
+const localNote = (text) => { const n = $('localNote'); n.hidden = !text; n.textContent = text || ''; };
+async function startLocalCopy(src) {
+  const prev = mainCopy;
+  if (prev && src.file && (prev.local === src.file || prev.src.file === src.file)) { prev.src = src; return; } // 重新開啟同一部（例如多部匯出結束後回到原本的影片）
+  if (prev) prev.stop = true;
+  pendingLocal = null;
+  localNote('');
+  if (prev && prev.id) (async () => { try { await (await (await navigator.storage.getDirectory()).getDirectoryHandle('src')).removeEntry(prev.id); } catch { /* 已刪 */ } })();
+  if (src.kind !== 'video' || !src.file || localCopies.has(src.file) || !(navigator.storage && navigator.storage.getDirectory)) { mainCopy = null; return; }
+  const job = { src, id: 'v' + Date.now().toString(36), stop: false, local: null };
+  mainCopy = job;
+  const orig = src.file;
+  try {
+    job.local = await copyToOpfs(orig, 'src', job.id, (p) => {
+      if (mainCopy === job) localNote(`正在把影片存到 App 裡 ${Math.round(p * 100)}%（之後重複匯出、重新讀取比較穩定）`);
+    }, () => job.stop);
+  } catch (err) {
+    if (mainCopy !== job) return;
+    if (err.message !== 'removed') {
+      console.warn('影片無法存到 App 裡，直接讀原檔：', err);
+      localNote(isReadError(err) ? '' : `影片無法存到 App 裡（${err.message}），將直接讀原檔`);
+      if (!isReadError(err)) setTimeout(() => { if (mainCopy === job) localNote(''); }, 6000);
+    }
+    return;
+  }
+  if (mainCopy !== job || state.src !== job.src || job.src.file !== orig) return;
+  pendingLocal = job;
+  applyLocalCopy();
+}
+/** 把畫面上的影片換成 App 內的副本（播放器、匯出、關鍵幀分析都改讀副本）；正在匯出或播放時等結束再換 */
+async function applyLocalCopy() {
+  const job = pendingLocal;
+  if (!job || exporting || state.playing || batchRunning) return;
+  pendingLocal = null;
+  const src = job.src;
+  if (state.src !== src || mainCopy !== job) return;
+  src.file = job.local;
+  if (!src.headless && video.src) {
+    const oldUrl = video.src, t = video.currentTime;
+    keySeeking++;
+    try {
+      await loadVideo(job.local);
+      await new Promise((ok) => {
+        const timer = setTimeout(ok, 5000);
+        video.addEventListener('seeked', () => { clearTimeout(timer); ok(); }, { once: true });
+        video.currentTime = t;
+      });
+      URL.revokeObjectURL(oldUrl);
+    } catch (err) {
+      console.warn('播放器開不了副本，繼續用原檔播放：', err);
+      video.src = oldUrl;
+    } finally {
+      keySeeking--;
+    }
+  }
+  localNote('影片已存到 App 裡，重複匯出不必再讀原檔。');
+  setTimeout(() => { if (mainCopy === job && $('localNote').textContent.startsWith('影片已存到')) localNote(''); }, 5000);
+}
+
 function setSource(src) {
+  // 使用者開啟新的影片（不是多部匯出依序開啟、也不是回到 App 內副本）：在背景複製到 App 裡
+  if (!batchRunning) startLocalCopy(src);
   state.src = src;
   hasResult = false;
   resetEdit();
@@ -1230,6 +1301,8 @@ const exportErrorText = (err) => (isReadError(err)
   : err.message);
 /** 匯出中：鎖住會改變素材的按鈕 */
 function exportUi(on) {
+  exporting = on;
+  if (!on) setTimeout(applyLocalCopy, 0); // 匯出時複製完成的副本：現在換上
   $('prog').hidden = !on;
   if (on) $('prog').value = 0;
   $('export').disabled = on;
@@ -1275,31 +1348,62 @@ async function dropCopy(entry) {
   entry.local = null;
   try { await (await opfsDir()).removeEntry(entry.id); } catch { /* 已刪 */ }
 }
-/** 把選到的影片分段複製到 OPFS（分段讀 arrayBuffer，比串流穩定） */
+/**
+ * 把檔案分段複製到 OPFS 的 dir/name，回傳副本（File，檔名沿用原檔）。onProgress(0–1)；stopped() 為真時中止（丟出 'removed'）。
+ * 先在背景執行緒用同步存取控制代碼複製（copy-worker.js，舊版 Safari 也支援）；不支援時改用主執行緒的 createWritable。
+ */
+async function copyToOpfs(file, dir, name, onProgress = () => {}, stopped = () => false) {
+  if (!(navigator.storage && navigator.storage.getDirectory)) throw Object.assign(new Error('此瀏覽器不支援 App 內儲存空間'), { name: 'NotSupportedError' });
+  const est = await navigator.storage.estimate().catch(() => null);
+  if (est && est.quota && est.quota - est.usage < file.size + 64 * 2 ** 20) throw new Error(`App 可用的儲存空間不足（需要 ${(file.size / 2 ** 20).toFixed(0)} MB）`);
+  const dh = await (await navigator.storage.getDirectory()).getDirectoryHandle(dir, { create: true });
+  try {
+    await new Promise((ok, bad) => {
+      const w = new Worker(new URL('./copy-worker.js', import.meta.url));
+      const stop = (err) => { clearInterval(timer); w.terminate(); bad(err); };
+      const timer = setInterval(() => { if (stopped()) stop(new Error('removed')); }, 200);
+      w.onmessage = ({ data: d }) => {
+        if (d.progress !== undefined) { onProgress(d.progress); return; }
+        clearInterval(timer);
+        w.terminate();
+        if (d.done) ok();
+        else bad(Object.assign(new Error(d.error.message), { name: d.error.name }));
+      };
+      w.onerror = (e) => stop(new Error(e.message || '複製用的背景執行緒無法啟動'));
+      w.postMessage({ file, dir, name });
+    });
+  } catch (err) {
+    if (err.message === 'removed' || isReadError(err) || err.name === 'QuotaExceededError') throw err;
+    // 背景執行緒不能用同步存取控制代碼：改用主執行緒的 createWritable
+    const fh = await dh.getFileHandle(name, { create: true });
+    if (!fh.createWritable) throw err;
+    console.warn('背景複製失敗，改用 createWritable：', err);
+    const w = await fh.createWritable();
+    try {
+      const CH = 8 * 2 ** 20;
+      for (let o = 0; o < file.size; o += CH) {
+        if (stopped()) throw new Error('removed');
+        await w.write(new Uint8Array(await file.slice(o, Math.min(file.size, o + CH)).arrayBuffer()));
+        onProgress(Math.min(1, (o + CH) / file.size));
+      }
+      await w.close();
+    } catch (e) {
+      await w.abort().catch(() => {});
+      throw e;
+    }
+  }
+  const raw = await (await dh.getFileHandle(name)).getFile();
+  if (raw.size !== file.size) throw new Error('複製不完整');
+  const local = new File([raw], file.name, { type: file.type || 'video/mp4', lastModified: file.lastModified });
+  localCopies.add(local);
+  return local;
+}
+/** 把選到的影片複製到 OPFS（多部匯出用） */
 async function copyEntry(entry) {
   const f = entry.file;
   try {
     if (!(navigator.storage && navigator.storage.getDirectory)) { entry.copy = 'direct'; return; }
-    const est = await navigator.storage.estimate().catch(() => null);
-    if (est && est.quota && est.quota - est.usage < f.size + 64 * 2 ** 20) throw new Error(`App 可用的儲存空間不足（需要 ${(f.size / 2 ** 20).toFixed(0)} MB）`);
-    const fh = await (await opfsDir()).getFileHandle(entry.id, { create: true });
-    const w = await fh.createWritable();
-    try {
-      const CH = 8 * 2 ** 20;
-      for (let o = 0; o < f.size; o += CH) {
-        if (!batchFiles.includes(entry)) throw new Error('removed');
-        await w.write(new Uint8Array(await f.slice(o, Math.min(f.size, o + CH)).arrayBuffer()));
-        entry.pct = Math.min(1, (o + CH) / f.size);
-        renderBatch();
-      }
-      await w.close();
-    } catch (err) {
-      await w.abort().catch(() => {});
-      throw err;
-    }
-    const raw = await fh.getFile();
-    if (raw.size !== f.size) throw new Error('複製不完整');
-    entry.local = new File([raw], f.name, { type: f.type || 'video/mp4', lastModified: f.lastModified });
+    entry.local = await copyToOpfs(f, 'batch', entry.id, (p) => { entry.pct = p; renderBatch(); }, () => !batchFiles.includes(entry));
     entry.copy = 'ready';
   } catch (err) {
     if (err.message === 'removed') { await (await opfsDir()).removeEntry(entry.id).catch(() => {}); return; }
