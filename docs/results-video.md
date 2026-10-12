@@ -75,7 +75,7 @@ FID 是「一組對一組」的分佈距離，917 格對 2048 維特徵屬於小
 | IBLA 模糊度＋光吸收 | 0.405 | 0.204 | 0.223 | 0.642 | 0.394 |
 | UDCP 水下暗通道 | 0.371 | 0.201 | 0.464 | 0.675 | 0.558 |
 
-## 新模型評測：手機級（2024–2026）與大型對照模型
+## 新模型評測：手機級（2024–2026）、大型對照模型與通用還原模型
 
 **怎麼挑的**：搜尋 2024–2026 年的水下影像／影片增強研究。手機級的條件是參數少、全卷積、能轉 ONNX 在手機瀏覽器跑；
 另外把常被引用、但模型較大的幾個（U-shape Transformer、UnDIVE、DM-UW、UVENet、Shallow-UWnet）也拿來當對照，看「大模型」在同一組影片上是否真的比較好。
@@ -142,7 +142,7 @@ FID 是「一組對一組」的分佈距離，917 格對 2048 維特徵屬於小
 - **UnDIVE** 有兩組權重：官方的 `UnDIVE_100` 是在 UIEB 預訓練後、再用 UVE-38K 影片加時間一致性損失訓練（這 5 段可能在它的訓練資料裡）；
   `UIEB_pretrain_150` 只用 UIEB 訓練，當作沒看過 UVE-38K 的對照。兩組都評測。
 
-LPIPS、FID 的算法同上一節（`tools/perceptual_eval.py`）。🆕 = 新模型；排名依 PSNR（同分看 SSIM）。
+LPIPS、FID 的算法同上一節（`tools/perceptual_eval.py`）。🆕 = 新模型（含下面「通用影像還原模型」一節的 8 個）；排名依 PSNR（同分看 SSIM）。
 
 | 排名 | 方法 | PSNR ↑ | SSIM ↑ | LPIPS ↓ | FID ↓ | E_t ↓ | 亮度閃爍 |
 |---|---|---|---|---|---|---|---|
@@ -169,11 +169,19 @@ LPIPS、FID 的算法同上一節（`tools/perceptual_eval.py`）。🆕 = 新�
 | 21 | **UnDIVE 擴散先驗影片增強** 🆕 | 17.26 | 0.607 | 0.287 | 57.5 | 10.71 | 0.47 |
 | 22 | MLLE 最小色損＋局部對比 | 17.20 | 0.532 | 0.424 | 102.4 | 15.59 | 0.47 |
 | — | （未處理） | 16.88 | 0.585 | 0.319 | 48.2 | 10.70 | 0.37 |
-| 23 | 色彩平衡＋多尺度融合 | 15.56 | 0.586 | 0.283 | 74.1 | 11.30 | 0.35 |
-| 24 | ULAP 光衰減先驗復原 | 14.63 | 0.529 | 0.363 | 69.9 | 12.01 | 0.53 |
-| 25 | Sea-thru（ULAP 深度） | 14.52 | 0.466 | 0.399 | 87.0 | 14.11 | 0.93 |
-| 26 | IBLA 模糊度＋光吸收 | 12.77 | 0.409 | 0.375 | 58.3 | 12.70 | 0.70 |
-| 27 | UDCP 水下暗通道 | 10.99 | 0.387 | 0.426 | 66.4 | 13.14 | 0.42 |
+| 23 | **AdaIR 頻率自適應一體還原** 🆕 | 16.29 | 0.564 | 0.379 | 62.6 | 11.19 | 0.37 |
+| 24 | **DehazeFormer 去霧 Transformer** 🆕 | 15.84 | 0.557 | 0.379 | 74.4 | 11.16 | 0.36 |
+| 25 | **MoCE-IR 專家混合一體還原** 🆕 | 15.83 | 0.559 | 0.379 | 61.5 | 11.12 | 0.35 |
+| 26 | **MoCE-IR-S（小型版）** 🆕 | 15.71 | 0.553 | 0.382 | 61.5 | 11.11 | 0.36 |
+| 27 | 色彩平衡＋多尺度融合 | 15.56 | 0.586 | 0.283 | 74.1 | 11.30 | 0.35 |
+| 28 | **PromptIR 提示式一體還原** 🆕 | 15.30 | 0.549 | 0.383 | 61.7 | 11.09 | 0.39 |
+| 29 | **InstructIR 文字指令還原（指令：修照片的顏色）** 🆕 | 15.09 | 0.547 | 0.395 | 72.6 | 11.01 | 0.42 |
+| 30 | **ICELUT 查表式修圖** 🆕 | 14.67 | 0.529 | 0.418 | 76.1 | 11.13 | 0.43 |
+| 31 | ULAP 光衰減先驗復原 | 14.63 | 0.529 | 0.363 | 69.9 | 12.01 | 0.53 |
+| 32 | Sea-thru（ULAP 深度） | 14.52 | 0.466 | 0.399 | 87.0 | 14.11 | 0.93 |
+| 33 | **OneRestore 複合退化還原** 🆕 | 14.14 | 0.558 | 0.392 | 68.2 | 11.07 | 0.62 |
+| 34 | IBLA 模糊度＋光吸收 | 12.77 | 0.409 | 0.375 | 58.3 | 12.70 | 0.70 |
+| 35 | UDCP 水下暗通道 | 10.99 | 0.387 | 0.426 | 66.4 | 13.14 | 0.42 |
 
 #### 手機適用性（新模型與 App 現有的深度模型）
 
@@ -193,14 +201,22 @@ LPIPS、FID 的算法同上一節（`tools/perceptual_eval.py`）。🆕 = 新�
 | **UnDIVE** 🆕 | 672 萬 | 25.7 MB | 2901.9 ms（256×144） | 3901 ms | 15.12 | 0.292 |
 | **UnDIVE-UIEB** 🆕 | 672 萬 | 25.7 MB | 2974.0 ms（256×144） | 4256 ms | 16.75 | 0.293 |
 | **DM-UW** 🆕 | 1,071 萬 | 45.4 MB | 127448.3 ms（256×256） | — | 20.58 | 0.264 |
+| **PromptIR** 🆕 | 3,538 萬 | 137.8 MB | 25661.0 ms（256×160） | — | 16.87 | 0.333 |
+| **AdaIR** 🆕 | 2,874 萬 | 111.0 MB | 37241.0 ms（256×256） | — | 16.95 | 0.333 |
+| **MoCE-IR** 🆕 | 2,535 萬 | 103.3 MB | 18595.2 ms（256×160） | — | 16.95 | 0.332 |
+| **MoCE-IR-S** 🆕 | 1,148 萬 | 50.4 MB | 10000.0 ms（256×160） | — | 16.88 | 0.333 |
+| **InstructIR** 🆕 | 1,584 萬 | 61.1 MB | 2090.9 ms（256×160） | — | 15.23 | 0.352 |
+| **DehazeFormer** 🆕 | 124 萬 | 5.8 MB | 4500.5 ms（256×256） | — | 16.27 | 0.342 |
+| **OneRestore** 🆕 | 1,798 萬 | 69.2 MB | 3273.1 ms（256×256） | — | 16.78 | 0.334 |
+| **ICELUT** 🆕 | 查表式 | 5.4 MB | 55.9 ms（256×256） | — | 14.98 | 0.369 |
 | **UVENet** 🆕 | 3,320 萬 | 141.2 MB | 7833.1 ms（256×256×5 格） | — | — | — |
-| WaterNet | 109 萬 | 4.2 MB | 6452.9 ms（256×144） | — | 19.05 | 0.266 |
 | Five A+ | 9 千 | 832 KB | 869.2 ms（256×256） | — | 19.13 | 0.274 |
 | UIEC²-Net | 53 萬 | 2.1 MB | 8421.2 ms（256×256） | — | 19.43 | 0.265 |
+| WaterNet | 109 萬 | 4.2 MB | 6452.9 ms（256×144） | — | 19.05 | 0.266 |
 | NU²-Net | 315 萬 | 12.0 MB | 1957.3 ms（256×256） | — | 19.81 | 0.264 |
 | UVE-Net | 53 萬 | 2.1 MB | 342.9 ms（320×176） | — | 18.94 | 0.280 |
-| FUnIE-GAN | 702 萬 | 13.4 MB | 371.3 ms（256×160） | — | 21.92 | 0.248 |
 | UWCNN | 4 萬 | 160 KB | 1409.0 ms（256×256） | — | 17.44 | 0.362 |
+| FUnIE-GAN | 702 萬 | 13.4 MB | 371.3 ms（256×160） | — | 21.92 | 0.248 |
 
 **注意**：EUVP 照片分數有主場優勢的：AquaFastNet（權重用 EUVP 測試集挑最佳回合）、Shallow-UWnet、FUnIE-GAN（EUVP 訓練）、
 LU2Net 與 U-shape Transformer（LSUI 訓練，LSUI 收錄了部分 EUVP、UIEB 的圖）。UVENet 是多格輸入的影片網路，不評 EUVP 單張照片。
@@ -221,6 +237,69 @@ UVE-38K 影片對所有新模型都是沒看過的資料，只有官方 UnDIVE �
   UnDIVE、Shallow-UWnet、U-shape Transformer、UVENet（2.9–7.8 秒）只能用關鍵幀快速匯出，除了 Shallow-UWnet（0.8 MB）模型檔都要 26–141 MB；DM-UW 每格 127 秒，不可行。
 - 授權：MobileIE、FGDPA、AquaFastNet 是 Apache-2.0，Shallow-UWnet、U-shape Transformer 是 MIT；**FGDPA 已加入 App**（`lib/methods/fgdpa.js`）。
   PIC-UIE、LU2Net、LiteEnhanceNet、UnDIVE、DM-UW、UVENet 的倉庫沒有授權聲明，暫不散布它們的權重（`models/eval/` 不進 git）。
+
+### 通用影像還原模型（2023–2025）套用在水下影片
+
+**怎麼挑的**：搜尋近 3 年（2023–2025）的通用影像還原論文，挑出退化種類和水下相近的模型。水下影片的問題是散射造成的霧化、偏色和低光，
+對應到「一體式還原」（一個模型同時處理霧、低光等多種退化）、去霧與修圖。條件是原作公開權重，而且能轉成 ONNX 在瀏覽器跑。
+這些模型都**沒有用水下資料訓練**，評測的目的是確認「拿現成的通用還原模型直接套在水下影片」是否可行。
+
+| 模型 | 出處 | 用的權重（任務） | 權重來源 | 授權 |
+|---|---|---|---|---|
+| PromptIR | Potlapalli et al., NeurIPS 2023（[arXiv 2306.13090](https://arxiv.org/abs/2306.13090)） | 一體式三合一（雜訊／雨／霧） | [va1shn9v/PromptIR](https://github.com/va1shn9v/PromptIR)（Google Drive） | 學術用途授權（非商用） |
+| AdaIR | Cui et al., ICLR 2025（[arXiv 2403.14614](https://arxiv.org/abs/2403.14614)） | 一體式五合一（雜訊／雨／霧／模糊／低光） | [c-yn/AdaIR](https://github.com/c-yn/AdaIR)（Google Drive） | MIT |
+| MoCE-IR、MoCE-IR-S | Zamfir et al., CVPR 2025（[arXiv 2411.18466](https://arxiv.org/abs/2411.18466)） | 一體式五合一（大、小兩種） | [eduardzamfir/MoCE-IR](https://github.com/eduardzamfir/MoCE-IR)（Google Drive） | CC BY-NC-SA 4.0 |
+| InstructIR | Conde et al., ECCV 2024（[arXiv 2401.16468](https://arxiv.org/abs/2401.16468)） | 七種任務、依文字指令（含 MIT-5K 修圖） | [mv-lab/InstructIR](https://github.com/mv-lab/InstructIR)（Hugging Face） | MIT |
+| DehazeFormer | Song et al., IEEE TIP 2023（[arXiv 2204.03883](https://arxiv.org/abs/2204.03883)） | 作者 Hugging Face 展示版（預測逐像素色調曲線的 MCT 版） | [IDKiro/DehazeFormer](https://github.com/IDKiro/DehazeFormer)（[HF Space](https://huggingface.co/spaces/IDKiro/DehazeFormer_Demo)） | MIT |
+| OneRestore | Guo et al., ECCV 2024（[arXiv 2407.04621](https://arxiv.org/abs/2407.04621)） | 複合退化（低光＋霧＋雨＋雪，CDD-11），自動判斷退化種類 | [gy65896/OneRestore](https://github.com/gy65896/OneRestore)（Hugging Face） | 未聲明 |
+| ICELUT | Yang et al., ECCV 2024（[arXiv 2403.19238](https://arxiv.org/abs/2403.19238)） | 全域 3D 查表修圖（FiveK 專家修圖） | [Stephen0808/ICELUT](https://github.com/Stephen0808/ICELUT)（倉庫內） | 未聲明 |
+| AnyIR | Ren et al., 2025（[arXiv 2504.14249](https://arxiv.org/abs/2504.14249)） | — | [Amazingren/AnyIR](https://github.com/Amazingren/AnyIR) | **權重未公開，無法評測** |
+
+DehazeFormer 的戶外（RESIDE-outdoor）權重在 Google Drive 上超過下載配額，改用作者 Hugging Face 展示頁的權重。
+
+**轉換與驗證**（`scripts/export_restoration_onnx.py`）：同樣直接用原作的網路定義與權重（weights_only 載入；ICELUT 的查表檔用只允許 numpy 陣列的受限 unpickler），
+轉出 ONNX 後與原作 PyTorch 輸出逐像素比對，最大差都 ≤ 6×10⁻⁶（ICELUT 是和原作編譯的 C++ 三線性插值核心比）。需要的改寫：
+
+| 模型 | 改寫 |
+|---|---|
+| AdaIR | `torch.fft` 頻域低通改成等價的 DFT 矩陣乘法（可分離遮罩） |
+| MoCE-IR、MoCE-IR-S | `rfft2` 循環卷積改成 DFT 矩陣乘法；稀疏專家派送改成密集加權（數學上相同）；**去掉測試時路由加的隨機雜訊**（原作推論每次結果不同，影片會閃爍） |
+| InstructIR | 文字編碼器（BGE）不放進 ONNX：指令固定為「please I want this underwater photo for my photo album, can you edit it as a photographer and fix the colors」，先算好嵌入向量，分類結果為「修圖」任務 |
+| DehazeFormer、OneRestore、ICELUT | 抗鋸齒縮放／區域平均改成預先算好的可分離矩陣（輸入固定 256×256）；ICELUT 的三線性 3D 查表改成 8 角 gather |
+| OneRestore | 退化種類由內建的 ResNet-18 分類器自動判斷（與原作相同，一起放進 ONNX） |
+
+AdaIR 的頻率遮罩、DehazeFormer、OneRestore、ICELUT 只能用固定 256×256 輸入（和 LU2Net 等一樣壓成正方形再套回）；其他用長邊 256。
+評測方式與上面完全相同（UVE-38K 5 段 917 格、App 影片模式、擬合局部色彩轉換套回原解析度）。大模型的 917 格用原生 ONNX Runtime 4 執行緒跑
+（`node-net.mjs` 的 `ORT_NODE`，與 WASM 同一個 ONNX 檔、輸出相同），只為了縮短評測時間；下表的推論時間仍是 WASM 單執行緒。
+
+**結果**（35 個方法中的排名；上面總表已含這 8 個模型，依 PSNR 排序）：
+
+| 模型 | PSNR ↑ | SSIM ↑ | LPIPS ↓ | FID ↓ | PSNR 名次 | SSIM 名次 | LPIPS 名次 | FID 名次 | EUVP PSNR／LPIPS |
+|---|---|---|---|---|---|---|---|---|---|
+| （未處理） | 16.88 | 0.585 | 0.319 | 48.2 | — | — | — | — | 17.19／0.303 |
+| AdaIR | 16.29 | 0.564 | 0.379 | 62.6 | 23 | 22 | 25 | 24 | 16.95／0.333 |
+| DehazeFormer | 15.84 | 0.557 | 0.379 | 74.4 | 24 | 26 | 26 | 31 | 16.27／0.342 |
+| MoCE-IR | 15.83 | 0.559 | 0.379 | 61.5 | 25 | 23 | 27 | 20 | 16.95／0.332 |
+| MoCE-IR-S | 15.71 | 0.553 | 0.382 | 61.5 | 26 | 27 | 28 | 21 | 16.88／0.333 |
+| PromptIR | 15.30 | 0.549 | 0.383 | 61.7 | 28 | 28 | 29 | 22 | 16.87／0.333 |
+| InstructIR | 15.09 | 0.547 | 0.395 | 72.6 | 29 | 29 | 31 | 29 | 15.23／0.352 |
+| ICELUT | 14.67 | 0.529 | 0.418 | 76.1 | 30 | 31 | 33 | 32 | 14.98／0.369 |
+| OneRestore | 14.14 | 0.558 | 0.392 | 68.2 | 33 | 25 | 30 | 27 | 16.78／0.334 |
+
+（LPIPS 名次依未四捨五入的值；AdaIR、DehazeFormer、MoCE-IR 顯示都是 0.379。）
+
+**結論**：
+- **8 個通用還原模型全部比未處理的原片差**：PSNR、SSIM、LPIPS 都輸給原片（PSNR 16.88、LPIPS 0.319），EUVP 照片上也一樣（全部低於原片 17.19、0.303）。
+  最好的 AdaIR 排第 23／35，只贏過傳統的色彩平衡融合、ULAP、Sea-thru、IBLA、UDCP。
+- **原因是它們不修正水下偏色**：通用還原學的是「去霧／去雨／提亮」，不學顏色衰減。實際看輸出，綠色偏色不但沒去掉，
+  去霧造成的對比增強還把綠色加深（例如 marine_ranching_4 這段：原片平均 RGB 約 (132, 176, 123)，AdaIR 後 (116, 168, 106)，PromptIR 後 (93, 158, 80)；參考答案是 (170, 164, 152)）。
+  水下專用模型（Five A⁺、PIC-UIE、FGDPA）會把綠色偏色壓下去（同一格 Five A⁺ 後約 (125, 129, 144)），所以排名在前。
+- InstructIR 就算用文字指令要求「修正水下照片的顏色」，選到的也是一般修圖任務（MIT-5K），一樣不會去綠。ICELUT（FiveK 修圖查表）同理。
+- 速度（WASM 單執行緒，見下面手機適用性表）：ICELUT 56 ms 最快（全域查表，但分數最差之一）；InstructIR 2.1 秒、OneRestore 3.3 秒、DehazeFormer 4.5 秒、MoCE-IR-S 10 秒、MoCE-IR 18.6 秒、PromptIR 25.7 秒、AdaIR 37.2 秒，
+  除了 ICELUT、DehazeFormer（5–6 MB）模型檔都要 50–138 MB。就算畫質可用，也只能用關鍵幀快速匯出。
+- **因此這 8 個都不加入 App**。要用這類架構做水下還原，需要用水下成對資料（UIEB、LSUI 等）重新訓練或微調——那已經等於另一個水下專用模型，
+  而上表顯示 4 千–1 萬參數的水下專用模型（FGDPA、PIC-UIE）就已經接近最好的成績。
+- 授權：PromptIR（學術非商用）、MoCE-IR（CC BY-NC-SA）不能商用；OneRestore、ICELUT 沒有授權聲明。轉好的 ONNX 只留在本機評測（`models/eval/` 不進 git）。
 
 ## 深度模型的快速匯出：關鍵幀＋內插 vs 逐幀
 
