@@ -30,6 +30,7 @@ node scripts/euvp-dump.mjs <EUVP data/test 目錄> e && python tools/perceptual_
 PERC_EUVP=pe.json node scripts/bench.mjs <EUVP data/test 目錄> > docs/results.md
 # 手機級新模型：原作倉庫 clone 到同一個目錄 → 轉 ONNX（models/eval/）→ 評測（--extra）→ 速度 → 報告表格
 python scripts/export_mobile_onnx.py <倉庫目錄> models/eval
+python scripts/export_restoration_onnx.py <通用還原倉庫目錄> <權重目錄> models/eval   # 通用還原模型；大模型評測可設 ORT_NODE=<onnxruntime-node 路徑>
 node scripts/bench-video.mjs <UVE-38K imgs 目錄> --extra --methods mobileie,fgdpa,lu2net,liteenhancenet,aquafastnet --out m.json --dump d
 node scripts/net-speed.mjs --extra > s.json && node scripts/mobile-report.mjs --video v.json m.json --perc p.json … --speed s.json
 ```
@@ -415,10 +416,16 @@ App 播放時改用 GPU 套用局部係數，不受這個速度限制。（較�
 | UnDIVE（官方權重，含 UVE-38K 訓練） | 672 萬 | 17.26 / 0.607 | 0.287 / 57.5 | 2.9 秒 |
 | 對照：Five A⁺ / NU²-Net | 9 千 / 315 萬 | 19.36 / 0.627、19.06 / 0.623 | 0.232 / 47.5、0.233 / 45.1 | 869 / 1957 ms |
 
-**PIC-UIE** 只有 9,486 個參數，PSNR 18.97 排全部 27 種方法的第 5（與 FGDPA 並列在 App 前 4 名之後），LPIPS 好過 WaterNet、FID 是所有深度模型最低，
+**PIC-UIE** 只有 9,486 個參數，PSNR 18.97 排全部 35 種方法（含下面 8 個通用還原模型）的第 5（與 FGDPA 並列在 App 前 4 名之後），LPIPS 好過 WaterNet、FID 是所有深度模型最低，
 推論 19 ms 是所有模型最快。**大模型沒有比較好**：DM-UW、UVENet、U-shape Transformer、UnDIVE 都有幾百萬到三千多萬參數、每格要數秒到兩分鐘，
 在這組真實影片上卻都輸給 4 千–1 萬參數的 FGDPA、PIC-UIE；UnDIVE 的官方權重（含 UVE-38K 訓練）反而比只用 UIEB 預訓練的版本差。
 PIC-UIE 的倉庫沒有授權聲明，暫不放進 App；MobileIE、AquaFastNet（Apache-2.0）之後可以再加。
+
+**通用影像還原模型（2023–2025）**：另外把 8 個近 3 年、權重公開的通用還原模型直接套在同一組影片上——一體式還原 PromptIR（NeurIPS 2023）、
+AdaIR（ICLR 2025）、MoCE-IR／MoCE-IR-S（CVPR 2025）、文字指令還原 InstructIR（ECCV 2024）、去霧 DehazeFormer（TIP 2023）、
+複合退化 OneRestore（ECCV 2024）、查表修圖 ICELUT（ECCV 2024）。**全部比未處理的原片差**（35 種方法中 PSNR 排第 23–33；
+LPIPS 0.379–0.418、FID 61.5–76.1，原片 0.319、48.2）：它們學的是去霧／去雨／提亮，不修正水下的綠藍偏色，去霧的對比增強反而把綠色加深。
+因此都不加入 App；細節見 [`docs/results-video.md`](docs/results-video.md)「通用影像還原模型」一節。
 
 **合成場景**（已知真值；水上場景經修正成像模型退化成藍水/綠水/混濁）——平均色差 ΔE（越低越好）：
 
@@ -483,6 +490,7 @@ tools/perceptual.py               LPIPS（AlexNet v0.1）與 FID（InceptionV3�
 tools/lpips_weights.py            LPIPS 權重轉換（只讀 numpy 陣列的安全 pickle 讀取）；scripts/get_perceptual_weights.sh 下載權重
 scripts/euvp-dump.mjs             EUVP 各方法輸出存檔（給 LPIPS）；bench-video.mjs --dump 存影片輸出
 scripts/export_mobile_onnx.py     新模型（MobileIE、FGDPA、LU2Net、LiteEnhanceNet、AquaFastNet、PIC-UIE、Shallow-UWnet、U-shape、UnDIVE、DM-UW）→ ONNX，與原作比對
+scripts/export_restoration_onnx.py 通用還原模型（PromptIR、AdaIR、MoCE-IR、InstructIR、DehazeFormer、OneRestore、ICELUT）→ ONNX，與原作比對
 lib/methods/mobile-nets.js        上述模型的評測用設定（不在 App 清單）；net-speed.mjs、mobile-report.mjs、dump-scores.mjs、dump-video-scores.mjs 為評測工具
 tools/uvenet_infer.py             UVENet（5 格輸入）原生推論，輸出給 bench-video.mjs --pre
 tools/diverout_cc.py              Diverout_sim 命令列版（Python + numpy + OpenCV + ffmpeg）：影片、照片、資料夾
