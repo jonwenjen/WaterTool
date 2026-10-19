@@ -7,6 +7,7 @@ import * as C from '../lib/core.js';
 import { METHODS, byId, defaults, composite, COMPOSITE, SCORES } from '../lib/methods/index.js';
 import { GPU_REF, testInput, fingerprint, fingerprintDiff } from '../lib/methods/gpu-ref.js';
 import { Processor } from '../lib/pipeline.js';
+import { modelFile } from '../lib/methods/net.js';
 import { makeScene, degrade } from '../lib/synth.js';
 import { nodeRunNet } from '../scripts/node-net.mjs';
 
@@ -34,7 +35,7 @@ test('GPU 自我檢查的指紋與目前的模型檔一致（模型換了要執�
   for (const file of files) {
     const m = METHODS.find((x) => x.model?.file === file), spec = m.blend ? m.blend.a : m;
     assert.ok(GPU_REF[file], `${file} 沒有指紋`);
-    const { x, w, h } = testInput(spec), y = await runNet(file, x, w, h);
+    const { x, w, h } = testInput(spec), y = await runNet(modelFile(m.model, 'webgpu').file, x, w, h);
     assert.ok(fingerprintDiff(fingerprint(y, w, h), GPU_REF[file]) < 1e-3, `${file} 的指紋和模型不符`);
   }
   // 算錯的輸出要被抓到：每個值都偏一點點（1%）就超過門檻

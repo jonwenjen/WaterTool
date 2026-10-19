@@ -1,6 +1,7 @@
 // WaterTool 介面：載入影片/照片 → 背景執行緒還原 → 分割比較 → 匯出。
 import { METHODS, byId, defaults, SCORES, RAW_SCORE, COMPOSITE } from './lib/methods/index.js';
 import { INFO, blendInfo } from './lib/methods/info.js';
+import { modelFile } from './lib/methods/net.js';
 import { HELP, paramHelp, helpHtml } from './lib/help.js';
 import { ASPECTS, DEFAULT_EDIT, MIN_ZOOM, editActive, cropActive, cropRect, keepSegments, outDuration, nextKept, Resampler, even, drawEdited } from './lib/edit.js';
 import { syntheticClip } from './lib/synth.js';
@@ -1143,7 +1144,8 @@ function selectMethod(id) {
   const m = byId[id];
   if (m.needsModel && !state.models.has(m.model.file)) {
     worker.postMessage({ type: 'loadModel', file: m.model.file }); // 選了就開始載入，不必等有畫面
-    const mb = m.model.mb + (state.models.size ? 0 : 'gpu' in navigator && $('gpuOn').checked ? 27 : 14); // 第一個模型還要下載 ONNX 執行環境（CPU 版 14 MB、GPU 版 27 MB）
+    const be = state.backend || ('gpu' in navigator && $('gpuOn').checked ? 'webgpu' : 'wasm'); // 還沒載入過模型時用猜的
+    const mb = modelFile(m.model, be).mb + (state.models.size ? 0 : be === 'webgpu' ? 27 : 14); // 第一個模型還要下載 ONNX 執行環境（CPU 版 14 MB、GPU 版 27 MB）
     showModelNote(`第一次使用會下載 ${m.short} 模型${state.models.size ? '' : '與 ONNX 執行環境'}（約 ${mb < 1 ? mb.toFixed(1) : Math.round(mb)} MB），存在本機後就不用再下載。`);
   }
   save();
@@ -1281,9 +1283,7 @@ function onPrefetch(m) {
 }
 // 只預先下載簡易模式列出的深度模型（其他方法選用時才下載）；已知是行動網路、慢速網路或開了省數據時不自動下載
 function prefetchFiles() {
-  const files = [];
-  for (const m of METHODS.slice(0, SIMPLE_N)) if (m.needsModel && !files.some((f) => f[0] === m.model.file)) files.push([m.model.file, m.model.mb]);
-  return files;
+  return [...new Set(METHODS.slice(0, SIMPLE_N).filter((m) => m.needsModel).map((m) => m.model.file))];
 }
 function meteredNetwork() {
   const c = navigator.connection;

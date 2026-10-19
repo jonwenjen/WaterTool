@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { METHODS } from '../lib/methods/index.js';
 import { testInput, fingerprint } from '../lib/methods/gpu-ref.js';
+import { modelFile } from '../lib/methods/net.js';
 
 const ort = await import('../node_modules/onnxruntime-web/dist/ort.wasm.min.mjs');
 ort.env.wasm.numThreads = 1;
@@ -10,7 +11,8 @@ const ref = {};
 for (const m of METHODS) {
   if (!m.needsModel || ref[m.model.file]) continue;
   const spec = m.blend ? m.blend.a : m, { x, w, h } = testInput(spec);
-  const s = await ort.InferenceSession.create(readFileSync(new URL('../' + m.model.file, import.meta.url)), { executionProviders: ['wasm'] });
+  // GPU 載入的是 fp16 版（m.model.webgpu）：指紋用同一個檔案在 CPU 上算
+  const s = await ort.InferenceSession.create(readFileSync(new URL('../' + modelFile(m.model, 'webgpu').file, import.meta.url)), { executionProviders: ['wasm'] });
   const y = (await s.run({ x: new ort.Tensor('float32', x, [1, x.length / (w * h), h, w]) })).y.data;
   ref[m.model.file] = fingerprint(y, w, h);
   console.error(m.model.file, `${w}×${h}`, ref[m.model.file].slice(0, 4).join(', '), '…');

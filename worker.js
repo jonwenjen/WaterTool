@@ -8,7 +8,7 @@
 import * as C from './lib/core.js';
 import { Processor } from './lib/pipeline.js';
 import { METHODS, byId, defaults } from './lib/methods/index.js';
-import { affine, fitG } from './lib/methods/net.js';
+import { affine, fitG, modelFile } from './lib/methods/net.js';
 import { uiqm, uciqe } from './lib/metrics.js';
 import { GPU_REF, testInput, fingerprint, fingerprintDiff } from './lib/methods/gpu-ref.js';
 
@@ -137,9 +137,14 @@ async function importRuntime(url) {
   throw err;
 }
 
+/** 模型識別名（原版檔名，App 各處用它）→ 這個執行方式實際下載的檔案（CPU：int8；GPU：fp16） */
+const specOf = (file) => METHODS.find((m) => m.model?.file === file);
+const actualFile = (file) => { const m = specOf(file); return m ? modelFile(m.model, backend || 'wasm') : { file, mb: 0 }; };
+
 function loadModel(file) {
   if (loading.has(file)) return loading.get(file);
   const p = (async () => {
+    await pickBackend();
     const seen = {};
     let fromCache = true;
     const prog = (k) => (g, t, cached) => {
@@ -150,7 +155,7 @@ function loadModel(file) {
     };
     const [ort, model] = await Promise.all([
       loadRuntime(prog('wasm')),
-      cachedDownload(new URL(file, new URL('./', self.location.href)).href, prog('model')),
+      cachedDownload(new URL(actualFile(file).file, new URL('./', self.location.href)).href, prog('model')),
     ]);
     let session = null, ep = backend, fallback = false;
     if (ep === 'webgpu') {
@@ -190,7 +195,7 @@ async function toCpu(file, s) {
  * 少數裝置的 WebGPU 會算錯、而且數值看起來正常（不是 NaN），所以每個模型第一次用 GPU 載入時都先檢查。
  */
 async function gpuMatches(ort, session, file) {
-  const ref = GPU_REF[file], m = METHODS.find((x) => x.model?.file === file);
+  const ref = GPU_REF[file], m = specOf(file);
   if (!ref || !m) return true;
   const { x, w, h } = testInput(m.blend ? m.blend.a : m);
   const y = (await session.run({ x: new ort.Tensor('float32', x, [1, x.length / (w * h), h, w]) })).y.data;
@@ -233,7 +238,10 @@ function prefetchAll(m) {
   prefetching = (async () => {
     const base = new URL('./', self.location.href);
     const rt = RUNTIME[await pickBackend()];
-    const files = [[rt.bin, rt.mb], ...(m.files || []).filter(([f], i, a) => a.findIndex((x) => x[0] === f) === i)];
+    const files = [[rt.bin, rt.mb], ...[...new Set(m.files || [])].map((k) => { const a = actualFile(k); return [a.file, a.mb]; })];
+    // 以前版本存的原版（未量化）模型：現在用量化版，刪掉釋放空間
+    const cache = await openModelCache();
+    if (cache) for (const x of METHODS) if (x.model && (x.model.wasm || x.model.webgpu)) await cache.delete(new URL(x.model.file, base).href).catch(() => {});
     const total = files.reduce((s, f) => s + f[1], 0) * 1e6;
     let done = 0, downloaded = false, failed = 0;
     for (const [file, mb] of files) {
