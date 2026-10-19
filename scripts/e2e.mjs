@@ -72,6 +72,41 @@ try {
   }
   ok(true, `${classic.length} 種傳統方法都能在介面上處理`);
 
+  // 換方法：參數、時間一致性、還原強度、自動色階回到預設；解析度、匯出方式、編碼不變；「恢復原本設定」按鈕同樣範圍
+  const setVal = (sel, v) => page.evaluate(([sel, v]) => { const el = document.querySelector(sel); el.value = String(v); el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); }, [sel, v]);
+  const readSet = () => page.evaluate(() => {
+    const v = (id) => document.getElementById(id).value;
+    return { tOn: document.getElementById('tOn').checked, tTau: v('tTau'), tEvery: v('tEvery'), mix: v('mix'), post: v('post'), mixV: document.getElementById('mixV').textContent,
+      outRes: v('outRes'), netExp: v('netExp'), prevRes: v('prevRes'), param: document.querySelector('#params input[type=range]')?.value, method: window.__watertool.state.method };
+  });
+  const tweak = async () => {
+    await setVal('#mix', 0.5); await setVal('#post', 0.4); await setVal('#tTau', 2); await setVal('#tEvery', 7);
+    await page.evaluate(() => { const el = document.getElementById('tOn'); el.checked = false; el.dispatchEvent(new Event('change')); });
+    const r = await page.$('#params input[type=range]');
+    if (r) await setVal('#params input[type=range]', await r.evaluate((e) => e.min));
+  };
+  const [ma, mb] = classic.filter((m) => m.params.some((p) => !p.options)).map((m) => m.id); // 有滑桿參數的兩種方法
+  await pick(ma); await waitIdle();
+  const base = await readSet();
+  await setVal('#outRes', '720'); await setVal('#netExp', '1'); await setVal('#prevRes', '480');
+  await tweak();
+  await pick(mb); await waitIdle();
+  const sw = await readSet();
+  ok(sw.method === mb && sw.tOn && sw.tTau === base.tTau && sw.tEvery === '1' && sw.mix === '1' && sw.mixV === '100%' && sw.post === '0'
+    && sw.outRes === '720' && sw.netExp === '1' && sw.prevRes === '480', `換方法後設定恢復預設、輸出設定保留：${JSON.stringify(sw)}`);
+  await pick(ma); await waitIdle();
+  ok((await readSet()).param === base.param, '換回原方法時參數也是預設值');
+  await tweak();
+  await page.click('#resetAll'); await waitIdle();
+  const rs = await readSet();
+  ok(rs.method === ma && rs.tOn && rs.mix === '1' && rs.post === '0' && rs.tEvery === '1' && rs.param === base.param && rs.outRes === '720',
+    `「恢復原本設定」按鈕：${JSON.stringify(rs)}`);
+  const deep = METHODS.find((m) => m.needsModel);
+  await page.evaluate((id) => window.__watertool.select(id), deep.id);
+  ok((await readSet()).tEvery === '4', '換到深度模型時每 N 幀重新估計預設為 4');
+  await setVal('#outRes', '1080'); await setVal('#netExp', '0.5'); await setVal('#prevRes', '720');
+  await pick(ma); await waitIdle();
+
   // 全部深度學習模型（下載模型、WASM 推論）
   for (const m of nets) {
     await pick(m.id);

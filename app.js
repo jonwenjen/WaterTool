@@ -1105,6 +1105,7 @@ function setMode(mode) {
 $('modeSimple').onclick = () => setMode('simple');
 $('modeAdvanced').onclick = () => setMode('advanced');
 function selectMethod(id) {
+  if (id !== state.method) restoreDefaults(id, false); // 換方法：除了輸出格式（解析度、匯出方式、編碼）與剪輯以外都回到原本設定
   state.method = id;
   renderMethods();
   renderParams();
@@ -1115,17 +1116,11 @@ function selectMethod(id) {
     const mb = m.model.mb + (state.models.size ? 0 : 14); // 第一個模型還要下載 ONNX 執行環境（14 MB）
     showModelNote(`第一次使用會下載 ${m.short} 模型${state.models.size ? '' : '與 ONNX 執行環境'}（約 ${mb < 1 ? mb.toFixed(1) : Math.round(mb)} MB），存在本機後就不用再下載。`);
   }
-  // 深度模型在影片中預設每 4 幀重算一次網路（其餘幀沿用並平滑係數）
-  if (m.needsModel && +$('tEvery').value === 1) setRange('tEvery', 4);
   save();
   resetTemporal();
   processFrame(null);
   ensureTrack();
   refreshPlayback(true);
-}
-function setRange(id, v) {
-  $(id).value = String(v);
-  $(id).dispatchEvent(new Event('input'));
 }
 function renderParams() {
   const m = byId[state.method], box = $('params'), vals = state.params[m.id];
@@ -1180,6 +1175,24 @@ function onParamChange() {
     if (state.view === 'compare') runCompare();
   }, 60);
 }
+/** 恢復原本設定的項目：方法參數、影片時間一致性、還原強度、自動色階（預設值取自 index.html）。
+ *  不動的：預覽／輸出解析度、匯出方式、影片編碼（輸出格式），以及剪輯（跟著影片走）。 */
+const RESET_RANGES = ['tTau', 'tDef', 'tEvery', 'mix', 'post'];
+function restoreDefaults(id, apply = true) {
+  const m = byId[id];
+  state.params[id] = defaults(m);
+  $('tOn').checked = $('tOn').defaultChecked;
+  for (const k of RESET_RANGES) {
+    $(k).value = $(k).defaultValue;
+    rangeShow[k]?.();
+  }
+  // 深度模型在影片中預設每 4 幀重算一次網路（其餘幀沿用並平滑係數）
+  if (m.needsModel) { $('tEvery').value = '4'; rangeShow.tEvery?.(); }
+  if (!apply) return;
+  renderParams();
+  onParamChange();
+}
+$('resetAll').onclick = () => restoreDefaults(state.method);
 $('resetParams').onclick = () => {
   state.params[state.method] = defaults(byId[state.method]);
   renderParams();
@@ -1232,9 +1245,10 @@ function showModelNote(text, err = false) {
 }
 
 // ---------------- 其他控制 ----------------
+const rangeShow = {}; // 滑桿數值顯示的更新函式（程式改值時用）
 function bindRange(id, fmtFn) {
   const el = $(id), out = $(id + 'V');
-  const upd = () => { if (out) out.textContent = fmtFn(+el.value); };
+  const upd = rangeShow[id] = () => { if (out) out.textContent = fmtFn(+el.value); };
   el.addEventListener('input', () => { upd(); onParamChange(); });
   upd();
 }

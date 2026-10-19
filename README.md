@@ -19,7 +19,7 @@
 npm install          # 只有開發 / 測試需要；網站本身是純靜態檔
 npm run serve        # http://localhost:8080
 npm test             # 單元測試（核心運算、16 種方法、時間穩定化）
-npm run e2e -- <影片>  # 無頭 Chromium 端對端：簡易／進階切換、播放、16 種方法、全部比較、8 個深度模型、Diverout_sim 關鍵幀、匯出 MP4/PNG
+npm run e2e -- <影片>  # 無頭 Chromium 端對端：簡易／進階切換、換方法恢復設定、播放、16 種方法、全部比較、8 個深度模型、Diverout_sim 關鍵幀、匯出 MP4/PNG
 node scripts/bench.mjs [EUVP data/test 目錄] > docs/results.md   # 重新評測（照片、合成場景）
 node scripts/bench-video.mjs <UVE-38K imgs 目錄> --out v.json && node scripts/video-report.mjs v.json > docs/results-video.md   # 影片
 # LPIPS / FID（需要 Python：torch、scipy、numpy，以及 pip install --no-deps torch-fidelity）
@@ -51,6 +51,8 @@ node scripts/net-speed.mjs --extra > s.json && node scripts/mobile-report.mjs --
    （分數在 [`lib/methods/index.js`](lib/methods/index.js) 的 `SCORES`，單元測試會核對與 [`docs/results-video.md`](docs/results-video.md) 一致）。
    右上角可切換 **簡易 / 進階**（預設簡易）：簡易只列評分前 6 名（Five A⁺、UIEC²-Net、WaterNet、NU²-Net、FGDPA、Diverout_sim），
    進階列出全部 16 種；「方法與出處」與全部比較也跟著顯示同一份清單。選擇會記在本機。
+   **換方法時設定會恢復原本值**：方法參數、影片時間一致性、還原強度、自動色階都回到預設（深度模型的「每 N 幀重新估計」預設 4），
+   預覽／輸出解析度、匯出方式、影片編碼與剪輯設定則保留。「還原方法」標題旁的 **恢復原本設定** 按鈕可隨時以同樣範圍重設目前方法。
 3. **全部比較** 會把目前畫面用清單上的方法各算一次，並列顯示（含 UIQM / UCIQE 與耗時），點一下即切換。
 4. **播放很順**：播放時由 GPU（WebGL2）把色彩即時套到每一格影片，速度跟原片一樣（測試中 30 fps 影片維持約 30 fps）；
    色彩本身由背景執行緒用完整演算法在小圖（長邊 320）上持續重算，再擬合成局部色彩轉換交給 GPU。
