@@ -111,10 +111,7 @@ try {
   for (const m of nets) {
     await pick(m.id);
     const id = await page.evaluate(() => window.__watertool.state.method);
-    await page.waitForFunction(() => {
-      const s = window.__watertool.state;
-      return [...s.models].some((f) => f.includes(s.method === 'funie' ? 'funie' : s.method));
-    }, null, { timeout: 180000 });
+    await page.waitForFunction((file) => window.__watertool.state.models.has(file), m.model.file, { timeout: 180000 });
     await waitIdle();
     ok(true, `${id} 模型載入並完成推論`);
   }

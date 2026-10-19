@@ -32,8 +32,17 @@ async function run(args, gpu) {
       return { px: Array.from(new Uint8ClampedArray(r.rgba)), ms: performance.now() - t0, backend: W.state.backend };
     }, id);
   }
+  let toggled = null;
+  if (gpu) { // 關掉「GPU 加速」：背景執行緒重新啟動，之後用 CPU
+    await page.click('#gpuOn');
+    toggled = await page.evaluate(async (id) => {
+      const W = window.__watertool, w = 64, h = 36, rgba = new Uint8ClampedArray(w * h * 4).fill(120);
+      await W.call({ type: 'process', slot: 'export', rgba: rgba.buffer, w, h, opts: { method: id, mix: 1, post: 0 } });
+      return { backend: W.state.backend, note: document.getElementById('gpuNote').textContent };
+    }, ids[0]);
+  }
   await browser.close();
-  return { out, errors };
+  return { out, errors, toggled };
 }
 const cpu = await run([], false), gpu = await run(GPU, true);
 for (const id of ids) {
@@ -43,6 +52,7 @@ for (const id of ids) {
   // GPU 自我檢查沒通過的模型會自動改用 CPU（backend = wasm）：結果仍必須和 CPU 相同
   ok(max <= 2, `${id}：${gpu.out[id].backend === 'webgpu' ? 'GPU' : 'GPU 自我檢查不通過 → 自動改用 CPU'}，與 CPU 的結果最大差 ${max}、平均 ${(sum / (a.length * 0.75)).toFixed(3)}（0–255）`);
 }
+ok(gpu.toggled && gpu.toggled.backend === 'wasm', `關掉 GPU 加速後改用 CPU（${JSON.stringify(gpu.toggled)}）`);
 ok(!cpu.errors.length && !gpu.errors.length, '沒有頁面錯誤' + [...cpu.errors, ...gpu.errors].join(' / '));
 await server.close?.();
 process.exit(fails ? 1 : 0);
