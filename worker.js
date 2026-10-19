@@ -10,18 +10,42 @@ import { Processor } from './lib/pipeline.js';
 import { METHODS, byId, defaults } from './lib/methods/index.js';
 import { affine, fitG } from './lib/methods/net.js';
 import { uiqm, uciqe } from './lib/metrics.js';
+import { GPU_REF, testInput, fingerprint, fingerprintDiff } from './lib/methods/gpu-ref.js';
 
-const sessions = new Map(); // 模型檔 → InferenceSession
+const sessions = new Map(); // 模型檔 → { ort, session, ep, checked }
 const ctx = {
   runNet: async (file, x, w, h) => {
     const s = sessions.get(file);
     if (!s) throw new Error('模型尚未載入：' + file);
-    return (await s.session.run({ x: new s.ort.Tensor('float32', x, [1, x.length / (w * h), h, w]) })).y.data;
+    const run = async () => (await s.session.run({ x: new s.ort.Tensor('float32', x, [1, x.length / (w * h), h, w]) })).y.data;
+    if (s.ep !== 'webgpu') return run();
+    try {
+      return await run();
+    } catch (err) { // GPU 推論出錯（例如 GPU 裝置遺失）：這個模型改用 CPU（WASM）
+      console.warn('WebGPU 推論失敗，改用 CPU：', err);
+      await toCpu(file, s);
+      return run();
+    }
   },
 };
 const slots = { preview: new Processor(ctx), export: new Processor(ctx) };
 const loading = new Map(); // 模型檔 → Promise
 let runtime = null;
+// 深度模型的執行方式：'webgpu'（裝置支援 WebGPU 時用 GPU，不支援的運算子自動回到 CPU）或 'wasm'（CPU）。
+// App 的設定可以關掉 GPU（訊息 config）；第一次載入模型前決定，之後要換就重新啟動背景執行緒。
+let gpuWanted = true, backend = null;
+async function pickBackend() {
+  if (backend) return backend;
+  backend = 'wasm';
+  if (gpuWanted && self.navigator?.gpu) {
+    try { if (await navigator.gpu.requestAdapter()) backend = 'webgpu'; } catch { /* 不支援 */ }
+  }
+  return backend;
+}
+const RUNTIME = {
+  wasm: { js: 'vendor/ort/ort.wasm.bundle.min.mjs', bin: 'vendor/ort/ort-wasm-simd-threaded.wasm', mb: 14.2 },
+  webgpu: { js: 'vendor/ort/ort.webgpu.bundle.min.mjs', bin: 'vendor/ort/ort-wasm-simd-threaded.asyncify.wasm', mb: 26.8 },
+};
 
 // 模型與 ONNX 執行環境存在獨立、不隨 App 版本清除的快取（Cache Storage），只下載一次。
 // 只有這兩個檔案本身改變時才改 MODEL_CACHE 的版本號（sw.js 也用同一個名字）。
@@ -84,9 +108,9 @@ async function download(url, onBytes) {
 function loadRuntime(onBytes) {
   if (runtime) return runtime;
   runtime = (async () => {
-    const base = new URL('./', self.location.href);
-    const ort = await importRuntime(new URL('vendor/ort/ort.wasm.bundle.min.mjs', base).href);
-    const wasm = await cachedDownload(new URL('vendor/ort/ort-wasm-simd-threaded.wasm', base).href, onBytes);
+    const base = new URL('./', self.location.href), rt = RUNTIME[await pickBackend()];
+    const ort = await importRuntime(new URL(rt.js, base).href);
+    const wasm = await cachedDownload(new URL(rt.bin, base).href, onBytes);
     // 多執行緒需要跨來源隔離（COOP/COEP 標頭）：GitHub Pages 不能設標頭，由 sw.js 補上；沒有就單執行緒
     // 桌機最多 4 條。手機一律單執行緒：多執行緒在手機上會讓背景執行緒卡死（實際回報），穩定優先
     const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
@@ -128,9 +152,23 @@ function loadModel(file) {
       loadRuntime(prog('wasm')),
       cachedDownload(new URL(file, new URL('./', self.location.href)).href, prog('model')),
     ]);
-    const session = await ort.InferenceSession.create(model, { executionProviders: ['wasm'] });
-    sessions.set(file, { ort, session });
-    postMessage({ type: 'model', file, state: 'ready', fromCache });
+    let session = null, ep = backend, fallback = false;
+    if (ep === 'webgpu') {
+      try {
+        session = await ort.InferenceSession.create(model, { executionProviders: ['webgpu', 'wasm'] });
+        if (!(await gpuMatches(ort, session, file))) {
+          await session.release?.().catch(() => {});
+          session = null;
+        }
+      } catch (err) {
+        console.warn('WebGPU 無法載入這個模型，改用 CPU：', err);
+        session = null;
+      }
+      if (!session) { ep = 'wasm'; fallback = true; }
+    }
+    session ??= await ort.InferenceSession.create(model, { executionProviders: ['wasm'] });
+    sessions.set(file, { ort, session, ep, bytes: model });
+    postMessage({ type: 'model', file, state: 'ready', fromCache, backend: ep, fallback });
   })().catch((err) => {
     loading.delete(file);
     postMessage({ type: 'model', file, state: 'error', message: String(err && err.message ? err.message : err) });
@@ -138,6 +176,27 @@ function loadModel(file) {
   });
   loading.set(file, p);
   return p;
+}
+
+async function toCpu(file, s) {
+  await s.session.release?.().catch(() => {});
+  s.session = await s.ort.InferenceSession.create(s.bytes, { executionProviders: ['wasm'] });
+  s.ep = 'wasm';
+  postMessage({ type: 'model', file, state: 'backend', backend: 'wasm', fallback: true });
+}
+
+/**
+ * GPU 自我檢查：在固定測試畫面上跑一次，和 CPU 算好的指紋比對（lib/methods/gpu-ref.js）。
+ * 少數裝置的 WebGPU 會算錯、而且數值看起來正常（不是 NaN），所以每個模型第一次用 GPU 載入時都先檢查。
+ */
+async function gpuMatches(ort, session, file) {
+  const ref = GPU_REF[file], m = METHODS.find((x) => x.model?.file === file);
+  if (!ref || !m) return true;
+  const { x, w, h } = testInput(m.blend ? m.blend.a : m);
+  const y = (await session.run({ x: new ort.Tensor('float32', x, [1, x.length / (w * h), h, w]) })).y.data;
+  const d = y.every(Number.isFinite) ? fingerprintDiff(fingerprint(y, w, h), ref) : Infinity;
+  if (d > 0.01) console.warn(`WebGPU 算出的 ${file} 和 CPU 不同（差 ${(d * 100).toFixed(1)}%），改用 CPU`);
+  return d <= 0.01;
 }
 
 async function ensureModel(method) {
@@ -164,13 +223,17 @@ function fitCoeffs(src, out, cut, div = 32) {
   return { a: A, b: B };
 }
 
-/** 第一次開啟：把 ONNX 執行環境與所有模型下載進本機快取（已存在的會略過，不建立推論 session） */
+/**
+ * 第一次開啟：把 ONNX 執行環境與 App 指定的模型（files：[[檔案, MB]]，簡易模式的方法）下載進本機快取
+ * （已存在的會略過，不建立推論 session）。其他模型選用時才下載。
+ */
 let prefetching = null;
-function prefetchAll() {
+function prefetchAll(m) {
   if (prefetching) return prefetching;
   prefetching = (async () => {
     const base = new URL('./', self.location.href);
-    const files = [['vendor/ort/ort-wasm-simd-threaded.wasm', 14.2], ...METHODS.filter((m) => m.needsModel).map((m) => [m.model.file, m.model.mb])];
+    const rt = RUNTIME[await pickBackend()];
+    const files = [[rt.bin, rt.mb], ...(m.files || []).filter(([f], i, a) => a.findIndex((x) => x[0] === f) === i)];
     const total = files.reduce((s, f) => s + f[1], 0) * 1e6;
     let done = 0, downloaded = false, failed = 0;
     for (const [file, mb] of files) {
@@ -187,7 +250,7 @@ function prefetchAll() {
     }
     // 執行環境的 JS 模組也先載一次，讓 Service Worker 把它存進離線快取
     await loadRuntime(() => {}).catch(() => { failed++; });
-    postMessage({ type: 'prefetch', done: true, downloaded, failed, total });
+    postMessage({ type: 'prefetch', done: true, downloaded, failed, total, count: files.length - 1 });
   })().finally(() => { prefetching = null; });
   return prefetching;
 }
@@ -208,6 +271,8 @@ async function handle(e) {
     if (m.type === 'reset') {
       (slots[m.slot] || slots.preview).reset();
       if (m.slot !== 'export') lastFit = null;
+    } else if (m.type === 'config') {
+      if (!backend) gpuWanted = m.gpu !== false; // 已經載入執行環境就不改（App 會重新啟動背景執行緒）
     } else if (m.type === 'loadModel') {
       await loadModel(m.file).catch(() => {});
     } else if (m.type === 'process') {
@@ -245,7 +310,7 @@ async function handle(e) {
       const r = await new Processor(ctx).run(img, { ...m.opts, video: null, mix: 1 });
       postMessage({ type: 'keyfit', id: m.id, g: fitG(img, r.out) });
     } else if (m.type === 'prefetch') {
-      await prefetchAll();
+      await prefetchAll(m);
     } else if (m.type === 'compare') {
       const img = C.fromRGBA(new Uint8ClampedArray(m.rgba), m.w, m.h);
       const tiles = [];

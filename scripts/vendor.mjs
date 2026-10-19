@@ -2,7 +2,8 @@
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 const nm = new URL('../node_modules/', import.meta.url), v = new URL('../vendor/', import.meta.url);
 mkdirSync(new URL('ort/', v), { recursive: true });
-for (const f of ['ort.wasm.bundle.min.mjs', 'ort-wasm-simd-threaded.wasm'])
+// CPU 版（WASM）與 GPU 版（WebGPU；asyncify 版的 WASM，裝置支援 WebGPU 時才下載）
+for (const f of ['ort.wasm.bundle.min.mjs', 'ort-wasm-simd-threaded.wasm', 'ort.webgpu.bundle.min.mjs', 'ort-wasm-simd-threaded.asyncify.wasm'])
   copyFileSync(new URL('onnxruntime-web/dist/' + f, nm), new URL('ort/' + f, v));
 const ortVer = JSON.parse(readFileSync(new URL('onnxruntime-web/package.json', nm))).version;
 writeFileSync(new URL('ort/LICENSE', v), `onnxruntime-web ${ortVer} — Copyright (c) Microsoft Corporation. MIT License.\nhttps://github.com/microsoft/onnxruntime/blob/main/LICENSE\n`);

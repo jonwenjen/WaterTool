@@ -23,7 +23,10 @@ jobs:
       - name: 只放網站需要的檔案
         run: |
           mkdir _site
-          cp -r index.html app.js player-gl.js worker.js style.css sw.js manifest.webmanifest icons lib models vendor _site/
+          cp -r index.html app.js player-gl.js worker.js copy-worker.js style.css sw.js manifest.webmanifest icons lib models vendor _site/
+          rm -rf _site/models/eval
+      - name: 檢查離線快取清單的檔案都在，並依內容標記快取版本
+        run: node scripts/stamp-sw.mjs _site
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

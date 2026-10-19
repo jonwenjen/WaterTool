@@ -3,7 +3,7 @@
 // --perc：tools/perceptual_eval.py 的結果（LPIPS、FID），加進表格。
 // --ms：另一份 bench-video 結果，只取它的每格 ms（例如機器沒有其他工作時量的；平行跑很多評測時 ms 會偏高）。
 import { readFileSync } from 'node:fs';
-import { METHODS } from '../lib/methods/index.js';
+import { METHODS, composite } from '../lib/methods/index.js';
 
 const argv = process.argv.slice(2), take = (k) => { const i = argv.indexOf(k); return i >= 0 ? JSON.parse(readFileSync(argv.splice(i, 2)[1], 'utf8')) : null; };
 const perc = take('--perc') || {}, msFrom = take('--ms');
@@ -22,7 +22,11 @@ const avg = (id, k, src = all) => {
 const rows = ids.map((id) => ({ id, psnr: avg(id, 'psnr'), ssim: avg(id, 'ssim'), lpips: perc[id]?.lpips, fid: perc[id]?.fid, et: avg(id, 'etemp'), fl: avg(id, 'flicker'), ms: avg(id, 'ms', msFrom || all) }));
 const hasP = rows.some((r) => r.lpips !== undefined);
 const opt = (v, d) => (v === undefined ? '—' : v.toFixed(d));
-rows.sort((a, b) => b.psnr - a.psnr || b.ssim - a.ssim);
+// 綜合評分：四項分數（照表格的位數取整）各自最小–最大正規化後平均（lib/methods/index.js 的 composite，App 用同一個）。
+// 未處理的原片一起列出分數，但四項都不在兩端，不影響其他方法的分數。
+const round = (v, d) => +v.toFixed(d);
+const comp = hasP ? composite(Object.fromEntries(rows.map((r) => [r.id, [round(r.psnr, 2), round(r.ssim, 3), round(r.lpips, 3), round(r.fid, 1)]]))) : null;
+rows.sort((a, b) => (comp ? comp[b.id] - comp[a.id] : 0) || b.psnr - a.psnr || b.ssim - a.ssim);
 const f = (v, d = 2) => v.toFixed(d);
 const frames = clips.reduce((s, c) => s + ref[c].frames, 0);
 const counts = clips.map((c) => ref[c].frames);
@@ -38,12 +42,13 @@ if (hasP) {
   out.push('FID 是「一組對一組」的分佈距離，' + frames + ' 格對 2048 維特徵屬於小樣本，數值會偏高、只適合方法間比較（不能和論文裡用上萬張圖算的 FID 直接比）。計算：`tools/perceptual_eval.py`。\n');
 }
 if (msFrom) out.push('每格 ms 是 Node 單執行緒 CPU、320 px 的整套處理時間，取自機器沒有其他工作時的另一次評測（這次 917 格的評測平行跑了很多工作，時間偏高）。\n');
-out.push('| 排名 | 方法 | PSNR ↑ | SSIM ↑ |' + (hasP ? ' LPIPS ↓ | FID ↓ |' : '') + ' E_t ↓ | 亮度閃爍 | 每格 ms |');
-out.push('|---|---|---|---|' + (hasP ? '---|---|' : '') + '---|---|---|');
+if (comp) out.push('排名依**綜合評分**（0–100）：PSNR、SSIM、LPIPS、FID 各自在表中方法間做最小–最大正規化（最好 = 1、最差 = 0），四項平均 × 100。App 的方法清單用同樣的排序。\n');
+out.push('| 排名 | 方法 |' + (comp ? ' 綜合 ↑ |' : '') + ' PSNR ↑ | SSIM ↑ |' + (hasP ? ' LPIPS ↓ | FID ↓ |' : '') + ' E_t ↓ | 亮度閃爍 | 每格 ms |');
+out.push('|---|---|' + (comp ? '---|' : '') + '---|---|' + (hasP ? '---|---|' : '') + '---|---|---|');
 let rank = 0;
 for (const r of rows) {
   const isIn = r.id === 'input';
-  out.push(`| ${isIn ? '—' : ++rank} | ${name(r.id)} | ${f(r.psnr)} | ${f(r.ssim, 3)} |${hasP ? ` ${opt(r.lpips, 3)} | ${opt(r.fid, 1)} |` : ''} ${f(r.et)} | ${f(r.fl)} | ${isIn || Number.isNaN(r.ms) ? '—' : f(r.ms, 0)} |`);
+  out.push(`| ${isIn ? '—' : ++rank} | ${name(r.id)} |${comp ? ` ${f(comp[r.id], 1)} |` : ''} ${f(r.psnr)} | ${f(r.ssim, 3)} |${hasP ? ` ${opt(r.lpips, 3)} | ${opt(r.fid, 1)} |` : ''} ${f(r.et)} | ${f(r.fl)} | ${isIn || Number.isNaN(r.ms) ? '—' : f(r.ms, 0)} |`);
 }
 out.push('\n### 各段 PSNR\n');
 out.push('| 方法 | ' + clips.join(' | ') + ' |');

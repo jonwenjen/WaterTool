@@ -6,7 +6,7 @@
 //   PSNR / SSIM（與參考格）、時間誤差 E_t = 平均 |(O_t − O_{t−1}) − (R_t − R_{t−1})|（0–255，越低越接近參考影片的時間變化）、
 //   亮度閃爍 = 相鄰格平均亮度差（0–255）。
 //   --dump <目錄>：另外把每個方法的輸出格與參考格存成原始 RGB（給 tools/perceptual_eval.py 算 LPIPS 與 FID）。
-//   --extra：另外評測 lib/methods/mobile-nets.js 的候選模型（不在 App 清單裡）。
+//   --extra：另外評測 lib/methods/mobile-nets.js 的候選模型（不在 App 清單裡）；--blends：組合方法（blend.js）的全部候選。
 //   --clips a,b：只跑這幾段（中斷後補跑用）；--out 的 JSON 每跑完一段就更新一次。
 //   --pre id=目錄：網路輸出事先算好（多格輸入的影片網路，例如 tools/uvenet_infer.py 的 UVENet），
 //                  目錄裡是每段 N × 256 × 256 × 3 的 uint8；之後的擬合與影片模式與其他深度模型相同。
@@ -29,7 +29,8 @@ const only = opt('--methods', '');
 const out = opt('--out', '');
 const dump = opt('--dump', '');
 const KEYS = +opt('--keys', 0); // >0：深度模型只在每 KEYS 秒的關鍵幀跑網路，中間內插（App 的快速匯出）
-const EXTRA = args.includes('--extra') ? (await import('../lib/methods/mobile-nets.js')).CANDIDATES : [];
+const EXTRA = [...(args.includes('--extra') ? (await import('../lib/methods/mobile-nets.js')).CANDIDATES : []),
+  ...(args.includes('--blends') ? (await import('../lib/methods/blend.js')).BLEND_CANDIDATES.filter((m) => !METHODS.some((x) => x.id === m.id)) : [])]; // --blends：組合方法的全部候選
 const PRE = Object.fromEntries(args.flatMap((a, i) => (args[i - 1] === '--pre' ? [a.split('=')] : [])));
 const PREM = Object.keys(PRE).length ? (await import('../lib/methods/mobile-nets.js')).PRECOMPUTED.filter((m) => PRE[m.id]) : [];
 register(...EXTRA, ...PREM);
@@ -118,8 +119,10 @@ for (const id of methods) {
     for (const [i, f] of clip.raw.entries()) {
       cur = { clip: clip.name, i };
       if (id === 'input') { outs.push(f); continue; }
-      const opts = keys ? { method: id, params: defaults(m), g: interpKeys(keys, i / clip.fps) }
-        : { method: id, params: defaults(m), video: { dt: 1 / clip.fps, tau: 0.5, deflicker: 0.7, every: 1 } };
+      const video = { dt: 1 / clip.fps, tau: 0.5, deflicker: 0.7, every: 1 };
+      // 組合方法：Diverout_sim 的部分用關鍵幀，深度模型的部分照常時間平滑（同 App）
+      const opts = keys ? { method: id, params: defaults(m), g: interpKeys(keys, i / clip.fps), ...(m.blend ? { video } : {}) }
+        : { method: id, params: defaults(m), video };
       outs.push((await proc.run(f, opts)).out);
     }
     const ms = (performance.now() - t0) / clip.raw.length;

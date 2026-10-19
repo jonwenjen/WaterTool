@@ -184,6 +184,31 @@ try {
     await dl4.saveAs(dOut);
     const dInfo = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', dOut]).toString().trim();
     ok(dInfo === src, `Diverout_sim 影片匯出幀數與原片相同（${dInfo}）`);
+
+    // 組合方法（深度模型＋Diverout_sim 各半）：Diverout_sim 部分分析關鍵幀；播放時 GPU 同時套用矩陣與深度模型係數；快速匯出走 blend
+    const mix = METHODS.find((m) => m.blend);
+    await pick(mix.id);
+    await page.waitForFunction(() => window.__watertool.keyInfo().ready, null, { timeout: 120000 });
+    await waitIdle();
+    await page.evaluate(() => new Promise((ok) => {
+      const v = document.getElementById('video');
+      v.addEventListener('seeked', ok, { once: true });
+      v.currentTime = 0;
+    }));
+    await waitIdle();
+    const fits0 = await page.evaluate(() => window.__watertool.state.fits || 0);
+    await page.click('#play');
+    await page.waitForFunction((n) => (window.__watertool.state.fits || 0) > n, fits0, { timeout: 20000 }).catch(() => {});
+    const mp = await page.evaluate((n) => ({ matrix: window.__watertool.keyInfo().matrix, fits: (window.__watertool.state.fits || 0) - n }), fits0);
+    await page.click('#play');
+    await waitIdle();
+    ok(mp.matrix && mp.fits > 0, `${mix.short}：播放時 GPU 同時套用 Diverout_sim 矩陣與深度模型係數（係數更新 ${mp.fits} 次）`);
+    const [dl5] = await Promise.all([page.waitForEvent('download', { timeout: 600000 }), page.click('#export')]);
+    const mOut = join(TMP, 'mix-export.mp4');
+    await dl5.saveAs(mOut);
+    const mInfo = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', mOut]).toString().trim();
+    const me = await page.evaluate(() => window.__watertool.state.lastExport);
+    ok(mInfo === src && me && me.kind === 'blend', `${mix.short} 快速匯出（${me && me.kind}，${me && me.keys} 個深度模型關鍵幀）幀數與原片相同（${mInfo}）`);
     await pick('ancuti');
     await waitIdle();
   }

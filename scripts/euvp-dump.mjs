@@ -1,5 +1,5 @@
 // EUVP 測試集：把每個方法的輸出與參考圖存成原始 RGB，給 tools/perceptual_eval.py 算 LPIPS（格式同 bench-video.mjs --dump）。
-//   node scripts/euvp-dump.mjs <EUVP data/test 目錄> <輸出目錄> [--extra 只跑 mobile-nets.js 的候選模型] [--methods a,b 只跑這幾個]
+//   node scripts/euvp-dump.mjs <EUVP data/test 目錄> <輸出目錄> [--extra 只跑 mobile-nets.js 的候選模型 | --blends 組合方法的候選] [--methods a,b 只跑這幾個]
 // 處理方式與 bench.mjs 第 2 節相同（每張照片各自用預設參數處理）。
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,7 +10,8 @@ import { Processor } from '../lib/pipeline.js';
 import { nodeRunNet } from './node-net.mjs';
 
 const [dir, out] = process.argv.slice(2);
-const EXTRA = process.argv.includes('--extra') ? (await import('../lib/methods/mobile-nets.js')).CANDIDATES : null;
+const EXTRA = process.argv.includes('--extra') ? (await import('../lib/methods/mobile-nets.js')).CANDIDATES
+  : process.argv.includes('--blends') ? (await import('../lib/methods/blend.js')).BLEND_CANDIDATES : null; // --blends：組合方法的全部候選
 if (EXTRA) register(...EXTRA);
 const mi = process.argv.indexOf('--methods'), only = mi > 0 ? process.argv[mi + 1].split(',') : null;
 const LIST = (EXTRA || METHODS).filter((m) => !only || only.includes(m.id));

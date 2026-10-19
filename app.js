@@ -1,6 +1,6 @@
 // WaterTool 介面：載入影片/照片 → 背景執行緒還原 → 分割比較 → 匯出。
-import { METHODS, byId, defaults, SCORES, RAW_SCORE } from './lib/methods/index.js';
-import { INFO } from './lib/methods/info.js';
+import { METHODS, byId, defaults, SCORES, RAW_SCORE, COMPOSITE } from './lib/methods/index.js';
+import { INFO, blendInfo } from './lib/methods/info.js';
 import { HELP, paramHelp, helpHtml } from './lib/help.js';
 import { ASPECTS, DEFAULT_EDIT, MIN_ZOOM, editActive, cropActive, cropRect, keepSegments, outDuration, nextKept, Resampler, even, drawEdited } from './lib/edit.js';
 import { syntheticClip } from './lib/synth.js';
@@ -44,6 +44,14 @@ function startWorker() {
   worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
   worker.onmessage = onWorkerMessage;
   worker.onerror = (e) => showError('背景執行緒錯誤：' + (e.message || e));
+  // 深度模型用 GPU（WebGPU）或 CPU：要在載入任何模型之前告訴背景執行緒
+  worker.postMessage({ type: 'config', gpu: gpuSetting() });
+}
+/** 「深度模型用 GPU 加速」：畫面還沒建好時讀存檔（預設開） */
+function gpuSetting() {
+  const el = document.getElementById('gpuOn');
+  if (el && el.dataset.ready) return el.checked;
+  try { return JSON.parse(localStorage.getItem('watertool') || '{}').ui?.gpu !== false; } catch { return true; }
 }
 startWorker();
 
@@ -53,18 +61,18 @@ let WATCHDOG = 40000;
 setInterval(() => {
   if (pending.size && performance.now() - lastHeard > WATCHDOG) restartWorker();
 }, 1000);
-function restartWorker() {
-  state.restarts = (state.restarts || 0) + 1;
+function restartWorker(reason = '') {
+  if (!reason) state.restarts = (state.restarts || 0) + 1;
   worker.terminate();
   const waiting = [...pending.values()];
   pending.clear();
   startWorker();
   state.models.clear(); // 新的執行緒要重新載入模型（已存在本機，很快）
   track = null;
-  for (const p of waiting) p.reject(new Error('背景運算沒有回應，已自動重新啟動'));
+  for (const p of waiting) p.reject(new Error(reason || '背景運算沒有回應，已自動重新啟動'));
   const m = byId[state.method];
   if (m.needsModel) worker.postMessage({ type: 'loadModel', file: m.model.file });
-  console.warn('背景執行緒沒有回應，已重新啟動');
+  if (!reason) console.warn('背景執行緒沒有回應，已重新啟動');
   setTimeout(() => {
     resetTemporal();
     if (state.src && !state.playing) processFrame(null);
@@ -189,6 +197,7 @@ function readUi() {
   return {
     tOn: $('tOn').checked, tTau: +$('tTau').value, tDef: +$('tDef').value, tEvery: +$('tEvery').value,
     mix: +$('mix').value, post: +$('post').value, prevRes: $('prevRes').value, outRes: $('outRes').value, netExp: $('netExp').value, vcodec: $('vcodec').value,
+    gpu: $('gpuOn').checked,
   };
 }
 function buildOpts(dt, t = current()) {
@@ -196,7 +205,7 @@ function buildOpts(dt, t = current()) {
   const o = { method: state.method, params: state.params[state.method], mix: u.mix, post: u.post };
   if (dt !== null && u.tOn) o.video = { dt: dt || 1 / 30, tau: u.tTau, deflicker: u.tDef, every: u.tEvery };
   const g = keyG(t);
-  if (g) { o.g = g; delete o.video; } // Diverout_sim：用整支片的關鍵幀內插，不做逐幀估計與平滑
+  if (g) { o.g = g; if (!byId[state.method].blend) delete o.video; } // Diverout_sim：用整支片的關鍵幀內插，不做逐幀估計與平滑（組合方法的深度模型部分照常平滑）
   return o;
 }
 
@@ -206,7 +215,8 @@ const KEY_EDGE = 1280;
 let track = null; // { src, pkey, keys: [{ t, g }], ready, promise }
 let trackGen = 0;
 const usesKeys = () => !!byId[state.method].keyframes && !!state.src && state.src.kind !== 'image';
-const paramKey = () => state.method + JSON.stringify(state.params[state.method]);
+// 關鍵幀只跟 Diverout_sim 的參數有關（組合方法改比例不必重新分析）
+const paramKey = () => state.method + JSON.stringify(byId[state.method].blend ? { interval: state.params[state.method].interval } : state.params[state.method]);
 function keyG(t) {
   if (!usesKeys() || !track || !track.ready || track.src !== state.src || track.pkey !== paramKey()) return null;
   return interpKeys(track.keys, t);
@@ -222,8 +232,10 @@ function ensureTrack() {
     if (gen !== trackGen) return;
     t.ready = true;
     trackError = '';
-    if (byId[state.method].keyframes) $('modelState').hidden = true;
+    const cm = byId[state.method];
+    if (cm.keyframes && !(cm.needsModel && !state.models.has(cm.model.file))) $('modelState').hidden = true;
     if (!state.playing) processFrame(null);
+    else if (cm.blend) refreshPlayback(true); // 組合方法：播放改用 GPU 混合（深度模型係數＋Diverout_sim 矩陣）
     else if (glActive()) $('stTime').textContent = `播放：GPU 即時套用 · ${t.keys.length} 個關鍵幀線性內插`;
   }).catch((err) => {
     if (gen !== trackGen) return;
@@ -478,8 +490,9 @@ function startGL() {
   glview.height = view.height = h;
   g.resetCoeffs();
   ramp = null;
-  const seeded = hasResult && resFresh && orig.width > 0 ? seedFromPaused() : Promise.resolve();
-  $('stTime').textContent = matrixG() ? `播放：GPU 即時套用 · ${track.keys.length} 個關鍵幀線性內插` : '播放：GPU 即時套用 · 色彩計算中…';
+  // 組合方法用矩陣時，GPU 的局部係數只代表深度模型那一半：不能拿暫停畫面的完整結果來擬合
+  const seeded = hasResult && resFresh && orig.width > 0 && !(blendOf() && matrixG()) ? seedFromPaused() : Promise.resolve();
+  $('stTime').textContent = matrixOnly() ? `播放：GPU 即時套用 · ${track.keys.length} 個關鍵幀線性內插` : '播放：GPU 即時套用 · 色彩計算中…';
   glview.hidden = false;
   view.hidden = true;
   renderGL();
@@ -507,6 +520,17 @@ async function seedFromPaused() {
 /** 播放時可以直接用全域色彩矩陣的情況（Diverout_sim 關鍵幀已備妥、沒開共用自動色階） */
 function matrixG(t = current()) {
   return +$('post').value === 0 ? keyG(t) : null;
+}
+const blendOf = () => byId[state.method].blend || null;
+/** 只用矩陣、不必再算局部係數（單獨的 Diverout_sim）；組合方法還要深度模型那一半的係數 */
+const matrixOnly = (t) => !blendOf() && !!matrixG(t);
+/** GPU 上矩陣所佔的比例：組合方法 = Diverout_sim 比例 */
+const matW = () => (blendOf() ? +state.params[state.method].share : 1);
+/** 播放時送去背景計算的設定：組合方法有矩陣時只算深度模型那一半（強度在 GPU 上一起混合） */
+function fitOpts(dt) {
+  const o = buildOpts(dt), b = blendOf();
+  if (!b || !matrixG()) return o;
+  return { method: b.a.id, params: defaults(b.a), video: o.video, mix: 1, post: 0 };
 }
 // 播放時色彩更新的平滑過渡：新的係數不直接換上去（會跳一下），而是從「目前顯示的係數」在 GPU 上線性過渡到新係數，
 // 過渡時間 = 兩次更新的間隔（和匯出的關鍵幀內插同一個道理）。換鏡頭時直接換。
@@ -543,7 +567,7 @@ function refreshPlayback(methodChanged) {
   if (!state.playing || !glActive()) return;
   fitGen++; // 換方法或參數前送出的色彩計算，結果回來時丟掉
   if (methodChanged) { ramp = null; lastFitTime = null; }
-  if (matrixG()) {
+  if (matrixOnly()) {
     $('stTime').textContent = `播放：GPU 即時套用 · ${track.keys.length} 個關鍵幀線性內插`;
   } else {
     $('stTime').textContent = '播放：GPU 即時套用 · 色彩計算中…';
@@ -557,7 +581,7 @@ function renderGL(t) {
   if (ramp) gl.setKeyMix(rampK(performance.now()));
   state.glFrames = (state.glFrames || 0) + 1;
   const g = matrixG(t ?? current());
-  gl.setMatrix(g ? diverMatrix(g) : null);
+  gl.setMatrix(g ? diverMatrix(g) : null, matW());
   gl.draw(playSource(), { split: state.split, mode: state.view === 'compare' ? 'split' : state.view, amount: g ? +$('mix').value : 1 });
 }
 function stopGL() {
@@ -568,7 +592,7 @@ function stopGL() {
   orig.width = res.width = w;
   orig.height = res.height = h;
   octx.drawImage(playSource(), 0, 0, w, h);
-  gl.setMatrix(g ? diverMatrix(g) : null);
+  gl.setMatrix(g ? diverMatrix(g) : null, matW());
   gl.draw(playSource(), { mode: 'result', amount: g ? +$('mix').value : 1 });
   rctx.drawImage(glview, 0, 0, w, h);
   hasResult = true;
@@ -584,7 +608,7 @@ async function fitLoop() {
   fitRunning = true;
   let failed = false;
   try {
-    while (state.playing && glActive() && !matrixG()) {
+    while (state.playing && glActive() && !matrixOnly()) {
       const [w, h] = C.fitSize(state.src.w, state.src.h, FIT_EDGE);
       if (fitCanvas.width !== w || fitCanvas.height !== h) { fitCanvas.width = w; fitCanvas.height = h; }
       fctx.drawImage(playSource(), 0, 0, w, h);
@@ -595,8 +619,8 @@ async function fitLoop() {
       const t0 = performance.now();
       if (globalThis.__fitDelay) await new Promise((ok) => setTimeout(ok, globalThis.__fitDelay)); // 量測用：模擬慢裝置
       const gen = fitGen;
-      const r = await call({ type: 'fit', rgba: data.data.buffer, w, h, opts: buildOpts(dt), div: globalThis.__fitDiv || FIT_DIV }, [data.data.buffer]);
-      if (!state.playing || !glActive() || matrixG()) break;
+      const r = await call({ type: 'fit', rgba: data.data.buffer, w, h, opts: fitOpts(dt), div: globalThis.__fitDiv || FIT_DIV }, [data.data.buffer]);
+      if (!state.playing || !glActive() || matrixOnly()) break;
       if (gen !== fitGen) continue; // 這次是舊方法／舊參數算的
       setFitCoeffs(new Float32Array(r.a), new Float32Array(r.b), r.w, r.h, r.info && r.info.cut);
       state.fits = (state.fits || 0) + 1;
@@ -1078,7 +1102,7 @@ async function runCompare() {
 /** 影片評測分數：[PSNR, SSIM, LPIPS, FID] → 顯示文字 */
 const scoreText = ([ps, ss, lp, fid]) => `PSNR ${ps.toFixed(2)} · SSIM ${ss.toFixed(3)}` + (lp === undefined ? '' : ` · LPIPS ${lp.toFixed(3)} · FID ${fid.toFixed(1)}`);
 function renderMethods() {
-  $('methodsNote').textContent = `依同一組水下影片（UVE-38K 5 段成對影片）的 PSNR / SSIM 由好到壞排序。PSNR、SSIM 越高、LPIPS（感知距離）與 FID（整體分佈距離）越低，越接近參考影片；未處理的原片為 ${scoreText(RAW_SCORE)}。`;
+  $('methodsNote').textContent = `依同一組水下影片（UVE-38K 5 段成對影片）的綜合評分由好到壞排序：PSNR、SSIM、LPIPS、FID 四項各自在全部方法間換算成 0–1（最好 1、最差 0）後平均 × 100。PSNR、SSIM 越高、LPIPS（感知距離）與 FID（整體分佈距離）越低，越接近參考影片；未處理的原片為 ${scoreText(RAW_SCORE)}。`;
   const box = $('methods');
   box.innerHTML = '';
   $('methodCount').textContent = shownMethods().length;
@@ -1090,7 +1114,7 @@ function renderMethods() {
     b.className = 'method';
     b.setAttribute('role', 'radio');
     b.setAttribute('aria-checked', String(m.id === state.method));
-    b.innerHTML = `<span class="n">${i + 1}</span><span class="t">${m.name}<span class="k">${m.kind}</span></span><span class="s">${m.cite}<span class="score">${scoreText(SCORES[m.id])}</span></span>`;
+    b.innerHTML = `<span class="n">${i + 1}</span><span class="t">${m.name}<span class="k">${m.kind}</span></span><span class="s">${m.cite}<span class="score">綜合 ${COMPOSITE[m.id].toFixed(1)} · ${scoreText(SCORES[m.id])}</span></span>`;
     b.onclick = () => selectMethod(m.id);
     box.append(b);
   });
@@ -1119,7 +1143,7 @@ function selectMethod(id) {
   const m = byId[id];
   if (m.needsModel && !state.models.has(m.model.file)) {
     worker.postMessage({ type: 'loadModel', file: m.model.file }); // 選了就開始載入，不必等有畫面
-    const mb = m.model.mb + (state.models.size ? 0 : 14); // 第一個模型還要下載 ONNX 執行環境（14 MB）
+    const mb = m.model.mb + (state.models.size ? 0 : 'gpu' in navigator && $('gpuOn').checked ? 27 : 14); // 第一個模型還要下載 ONNX 執行環境（CPU 版 14 MB、GPU 版 27 MB）
     showModelNote(`第一次使用會下載 ${m.short} 模型${state.models.size ? '' : '與 ONNX 執行環境'}（約 ${mb < 1 ? mb.toFixed(1) : Math.round(mb)} MB），存在本機後就不用再下載。`);
   }
   save();
@@ -1163,7 +1187,9 @@ function renderParams() {
   if (m.keyframes) {
     const n = document.createElement('p');
     n.className = 'hint';
-    n.textContent = '影片會先分析整支片：每隔所選秒數取一個關鍵幀，中間線性內插（同 DIVEROUT）。下方「影片時間一致性」對這個方法不作用。';
+    n.textContent = m.blend
+      ? `影片的 Diverout_sim 部分會先分析整支片（每隔所選秒數一個關鍵幀，中間線性內插）；${m.blend.a.short} 部分照常套用下方「影片時間一致性」。`
+      : '影片會先分析整支片：每隔所選秒數取一個關鍵幀，中間線性內插（同 DIVEROUT）。下方「影片時間一致性」對這個方法不作用。';
     box.append(n);
   }
   $('modelState').hidden = !(m.needsModel && !state.models.has(m.model.file)) && !(m.keyframes && usesKeys() && !(track && track.ready && track.pkey === paramKey()));
@@ -1207,13 +1233,20 @@ $('resetParams').onclick = () => {
 
 function onModel(m) {
   if (m.state === 'ready') state.models.add(m.file);
+  if (m.backend) {
+    state.backend = m.backend;
+    $('gpuNote').textContent = m.backend === 'webgpu' ? '深度模型目前用 GPU（WebGPU）計算。'
+      : m.fallback ? '這台裝置的 GPU 算出的結果有問題，已自動改用 CPU。'
+        : $('gpuOn').checked ? '這台裝置的瀏覽器不支援 WebGPU，深度模型用 CPU 計算。' : '深度模型用 CPU 計算。';
+  }
   const cur = byId[state.method];
   if (!cur.needsModel || cur.model.file !== m.file) return; // 只顯示目前方法的模型狀態
   if (m.state === 'progress') {
     const pct = m.total ? ` ${Math.round((m.got / m.total) * 100)}%` : '';
     showModelNote(`下載模型中… ${(m.got / 1e6).toFixed(1)} MB${pct}`);
   } else if (m.state === 'ready') {
-    showModelNote(m.fromCache ? '模型已從本機載入（不需下載）。' : '模型已下載並存在本機，之後不用再下載。');
+    const how = m.backend === 'webgpu' ? '，用 GPU 計算' : '';
+    showModelNote(m.fromCache ? `模型已從本機載入（不需下載）${how}。` : `模型已下載並存在本機，之後不用再下載${how}。`);
     // 請瀏覽器把資料列為永久儲存，空間不足時較不會被清除（瀏覽器可能自動決定或忽略）
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     setTimeout(() => { $('modelState').hidden = true; }, 2500);
@@ -1234,7 +1267,7 @@ function onPrefetch(m) {
     box.hidden = false;
     bar.hidden = false;
     bar.value = m.total ? Math.min(1, m.got / m.total) : 0;
-    $('prefetchText').textContent = `第一次使用：下載深度模型存到本機 ${(m.got / 1e6).toFixed(1)} / ${(m.total / 1e6).toFixed(0)} MB（之後不用再下載）`;
+    $('prefetchText').textContent = `第一次使用：下載簡易模式的深度模型存到本機 ${(m.got / 1e6).toFixed(1)} / ${(m.total / 1e6).toFixed(0)} MB（之後不用再下載）`;
     return;
   }
   if (!m.downloaded && !m.failed) { box.hidden = true; return; }
@@ -1242,11 +1275,21 @@ function onPrefetch(m) {
   box.hidden = false;
   $('prefetchText').textContent = m.failed
     ? `有 ${m.failed} 個模型下載失敗，選用時會再試一次。`
-    : `${METHODS.filter((x) => x.needsModel).length} 個深度模型都已存在本機，之後可離線使用。`;
+    : `簡易模式的 ${m.count} 個深度模型都已存在本機，之後可離線使用（其他方法選用時才下載）。`;
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   setTimeout(() => { box.hidden = true; }, 5000);
 }
-setTimeout(() => worker.postMessage({ type: 'prefetch' }), 1000);
+// 只預先下載簡易模式列出的深度模型（其他方法選用時才下載）；已知是行動網路、慢速網路或開了省數據時不自動下載
+function prefetchFiles() {
+  const files = [];
+  for (const m of METHODS.slice(0, SIMPLE_N)) if (m.needsModel && !files.some((f) => f[0] === m.model.file)) files.push([m.model.file, m.model.mb]);
+  return files;
+}
+function meteredNetwork() {
+  const c = navigator.connection;
+  return !!c && (c.saveData || c.type === 'cellular' || /(^|-)2g|3g/.test(c.effectiveType || ''));
+}
+setTimeout(() => { if (!meteredNetwork()) worker.postMessage({ type: 'prefetch', files: prefetchFiles() }); }, 1000);
 
 function showModelNote(text, err = false) {
   const n = $('modelState');
@@ -1279,6 +1322,15 @@ $('prevRes').addEventListener('change', () => { save(); resetTemporal(); process
 $('outRes').addEventListener('change', save);
 $('netExp').addEventListener('change', save);
 $('vcodec').addEventListener('change', () => { save(); if (state.src) $('exportNote').textContent = sourceNote(state.src); });
+if (ui.gpu === false) $('gpuOn').checked = false;
+$('gpuOn').dataset.ready = '1';
+// 換 GPU／CPU：重新啟動背景執行緒（ONNX 執行環境只能載入一次），目前的模型重新載入
+$('gpuOn').addEventListener('change', () => {
+  save();
+  state.backend = null;
+  $('gpuNote').textContent = '';
+  restartWorker($('gpuOn').checked ? '改用 GPU 加速' : '改用 CPU');
+});
 $('measure').onclick = measure;
 
 // ---------------- 匯出 ----------------
@@ -1698,13 +1750,17 @@ async function buildColorizer(pw, ph, isCanceled, segs = null) {
       dispose() {},
     };
   }
-  const kind = m.keyframes && post === 0 ? 'matrix' : m.needsModel && post === 0 ? 'net' : 'fit';
-  let keys;
-  if (kind === 'matrix') {
+  // blend：組合方法 —— 深度模型的關鍵幀係數與 Diverout_sim 的矩陣都在 GPU 上內插，再依比例混合
+  const kind = post !== 0 ? 'fit' : m.blend ? 'blend' : m.keyframes ? 'matrix' : m.needsModel ? 'net' : 'fit';
+  let keys, dkeys = null;
+  if (kind === 'matrix' || kind === 'blend') {
     await ensureTrack(); // Diverout_sim 自己的關鍵幀（模式決定間隔）
-    keys = track.keys;
-  } else {
-    const msg = kind === 'net' ? undefined : { type: 'keyfit', opts: { method, params, post } };
+    if (!keyG(0)) throw new Error('關鍵幀分析未完成' + (trackError ? '：' + trackError : ''));
+    dkeys = track.keys;
+  }
+  if (kind === 'matrix') keys = dkeys;
+  else {
+    const msg = kind === 'net' ? undefined : kind === 'blend' ? { type: 'estimate', method: m.blend.a.id, params: defaults(m.blend.a) } : { type: 'keyfit', opts: { method, params, post } };
     keys = await collectKeys(state.src, method, params, interval, 640, isCanceled, (i, n) => {
       if (!n) { $('exportNote').textContent = `${m.short}：顏色變化較大處加算關鍵幀 ${i}…`; return; }
       $('prog').value = ((i - 1) / n) * 0.5;
@@ -1712,7 +1768,7 @@ async function buildColorizer(pw, ph, isCanceled, segs = null) {
     }, msg, segs, true); // 有時間裁切時只在保留的區段排關鍵幀；顏色突變處自動加密
   }
   const glc = new OffscreenCanvas(pw, ph), g = new GLPlayer(glc, { preserve: true });
-  const pre = kind === 'net' ? params.amount : 1;
+  const pre = kind === 'net' ? params.amount : 1, share = kind === 'blend' ? +params.share : 1;
   let seg = -1;
   // 係數：目前所在區段的前後兩個關鍵幀各上傳一次，GPU 依時間比例內插
   const setKeyPair = (t) => {
@@ -1730,7 +1786,10 @@ async function buildColorizer(pw, ph, isCanceled, segs = null) {
     fast: true, kind, keys,
     apply(canvas, _ctx, t) {
       if (kind === 'matrix') g.setMatrix(diverMatrix(interpKeys(keys, t)));
-      else setKeyPair(t);
+      else {
+        setKeyPair(t);
+        if (kind === 'blend') g.setMatrix(diverMatrix(interpKeys(dkeys, t)), share);
+      }
       g.draw(canvas, { mode: 'result', amount: mix, pre });
       return glc;
     },
@@ -2231,9 +2290,9 @@ function renderAbout() {
   const box = $('about');
   box.innerHTML = '';
   shownMethods().forEach((m, i) => {
-    const info = INFO[m.id];
+    const info = m.blend ? blendInfo(m) : INFO[m.id];
     const d = document.createElement('details');
-    d.innerHTML = `<summary>${i + 1}. ${m.name} <span class="score">${scoreText(SCORES[m.id])}</span></summary>
+    d.innerHTML = `<summary>${i + 1}. ${m.name} <span class="score">綜合 ${COMPOSITE[m.id].toFixed(1)} · ${scoreText(SCORES[m.id])}</span></summary>
       <p>${info.summary}</p>
       <p>論文：<a href="${info.paper[1]}" target="_blank" rel="noopener">${m.cite}（${info.paper[0]}）</a></p>
       <p>程式碼：${info.code.map(([t, u]) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`).join('、')}</p>`;
@@ -2298,18 +2357,25 @@ export function installHelp(ua) {
 }
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || /[?&]sw\b/.test(location.search))) { // ?sw：本機測試用
-  navigator.serviceWorker.register('sw.js').catch(() => {});
-  // Service Worker 接手後頁面才有跨來源隔離標頭（深度模型多執行緒）。第一次開啟或剛更新時重新整理一次 ——
-  // 只在還沒開任何素材時做，不打斷使用者；sessionStorage 防止不支援的瀏覽器一直重整。
-  const reloadOnce = () => {
-    if (self.crossOriginIsolated || state.src) return;
-    try {
-      if (sessionStorage.getItem('watertool-coi')) return;
-      sessionStorage.setItem('watertool-coi', '1');
-    } catch { return; }
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    // App 開著很久（手機 App 切到背景再回來）：回到前景時檢查有沒有新版
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {});
+  // Service Worker 接手：
+  //   第一次安裝：頁面重新整理一次才有跨來源隔離標頭（深度模型可多執行緒）；sessionStorage 防止不支援的瀏覽器一直重整。
+  //   之後（App 有新版，整套新檔案已下載好）：還沒開任何素材就重新整理成新版；正在處理影片時不打斷，下次開啟就是新版。
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (state.src) { if (hadController) localNote('App 已更新，下次開啟時套用新版。'); return; }
+    if (!hadController) {
+      if (self.crossOriginIsolated) return;
+      try {
+        if (sessionStorage.getItem('watertool-coi')) return;
+        sessionStorage.setItem('watertool-coi', '1');
+      } catch { return; }
+    }
     location.reload();
-  };
-  navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
+  });
 }
 
 renderMethods();
@@ -2323,5 +2389,6 @@ window.__watertool = { // 給自動化測試用
   probeGL: (src) => { if (!glActive()) return false; if (ramp) gl.setKeyMix(rampK(performance.now())); gl.draw(src, { mode: 'result' }); return true; },
   glState: () => (gl === null ? 'null' : gl === false ? 'false' : 'ok') + (glview.hidden ? ' hidden' : ' shown'),
   hangWorker: (ms) => { WATCHDOG = ms; worker.postMessage({ type: 'hang', debug: 'hang-test' }); },
+  setWatchdog: (ms) => { WATCHDOG = ms; }, // 測試用：模擬的 GPU（SwiftShader）很慢
   keyInfo: () => ({ ready: !!(track && track.ready && keyG(0)), keys: track ? track.keys.length : 0, matrix: glActive() && !!matrixG() }),
 };

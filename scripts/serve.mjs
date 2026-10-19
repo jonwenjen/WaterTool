@@ -1,8 +1,9 @@
 // 靜態伺服器（本機預覽與 e2e 測試用）：node scripts/serve.mjs [port]
+// 環境變數 ROOT=<目錄>：改從這個目錄提供（例如部署前的 _site，測 Service Worker 用）
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = process.env.ROOT || new URL('..', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
   '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.wasm': 'application/wasm', '.onnx': 'application/octet-stream', '.mp4': 'video/mp4' };
 export function serve(port = 8080) {

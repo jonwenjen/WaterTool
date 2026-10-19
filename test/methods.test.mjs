@@ -116,19 +116,20 @@ test('每個滑桿與下拉選單都有說明（從小到大、適用情境、�
   }
 });
 
-test('方法清單依影片評測 PSNR / SSIM 由好到壞排序，分數（含 LPIPS、FID）與 docs/results-video.md 一致', async () => {
+test('方法清單依綜合評分由好到壞排序，分數（PSNR、SSIM、LPIPS、FID、綜合）與 docs/results-video.md 一致', async () => {
   const { readFileSync } = await import('node:fs');
-  const { SCORES, RAW_SCORE } = await import('../lib/methods/index.js');
+  const { SCORES, RAW_SCORE, COMPOSITE } = await import('../lib/methods/index.js');
   // 只看最上面的主表（後面還有各段分數、手機級新模型等其他表格）
   const md = readFileSync(new URL('../docs/results-video.md', import.meta.url), 'utf8').split('\n### ')[0];
-  const rows = [...md.matchAll(/^\| (\d+|—) \| (.+?) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \|/gm)]
-    .map((r) => ({ rank: r[1], name: r[2], s: [+r[3], +r[4], +r[5], +r[6]] }));
+  const rows = [...md.matchAll(/^\| (\d+|—) \| (.+?) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \| ([\d.]+) \|/gm)]
+    .map((r) => ({ rank: r[1], name: r[2], comp: +r[3], s: [+r[4], +r[5], +r[6], +r[7]] }));
   const ranked = rows.filter((r) => r.rank !== '—');
   assert.equal(ranked.length, METHODS.length);
   ranked.forEach((r, i) => {
     const m = METHODS[i];
     assert.equal(m.name, r.name, `第 ${i + 1} 名應為 ${r.name}`);
     assert.deepEqual(SCORES[m.id], r.s, m.id);
+    assert.equal(COMPOSITE[m.id], r.comp, `${m.id} 綜合評分`);
   });
   const raw = rows.find((r) => r.rank === '—');
   assert.deepEqual(RAW_SCORE, raw.s);
