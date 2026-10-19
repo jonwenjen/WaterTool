@@ -28,8 +28,9 @@ function call(msg, transfer = []) {
 }
 function onWorkerMessage(e) {
   const m = e.data;
-  // 只有回覆請求（或 alive）才算「有在處理」；模型下載進度不算，否則卡死時看門狗會被騙過
-  if (m.type !== 'prefetch' && m.type !== 'model') lastHeard = performance.now();
+  // 回覆、alive 與下載進度都算「有在處理」：背景執行緒真的卡住（運算卡死）時什麼訊息都送不出來。
+  // 下載進度一定要算 —— 慢速網路第一次下載模型會超過 WATCHDOG，以前會被當成卡死、重新啟動後從頭下載，永遠下載不完
+  if (m.type !== 'model' || m.state === 'progress') lastHeard = performance.now();
   if (m.type === 'alive') return;
   if (m.type === 'model') return onModel(m);
   if (m.type === 'prefetch') return onPrefetch(m);
@@ -801,9 +802,11 @@ async function openFile(file) {
   try {
     if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|bmp)$/i.test(file.name)) {
       const bitmap = await createImageBitmap(file);
+      if (!batchRunning) releaseVideo(); // 放掉之前影片佔用的解碼器與記憶體（手機上很吃緊）
       setSource({ kind: 'image', bitmap, w: bitmap.width, h: bitmap.height, file, name: file.name });
       return true;
     }
+    if (video.src) releaseVideo(); // 先放掉之前的影片（連同它的 blob 網址；以前每開一部就留下一個）
     // 播放器偶爾暫時打不開（剛匯出完大影片：解碼器、記憶體還沒釋放）→ 放掉舊影片、等一下再試
     const waits = batchRunning ? [1000, 3000, 6000] : [800];
     let err = null;
@@ -944,6 +947,8 @@ async function applyLocalCopy() {
 }
 
 function setSource(src) {
+  const prev = state.src;
+  if (prev && prev !== src && prev.kind === 'image' && prev.bitmap) prev.bitmap.close?.(); // 舊照片的點陣圖
   // 使用者開啟新的影片（不是多部匯出依序開啟、也不是回到 App 內副本）：在背景複製到 App 裡
   if (!batchRunning) startLocalCopy(src);
   state.src = src;
@@ -1105,6 +1110,7 @@ function setMode(mode) {
 $('modeSimple').onclick = () => setMode('simple');
 $('modeAdvanced').onclick = () => setMode('advanced');
 function selectMethod(id) {
+  if (exporting) return; // 匯出中不換方法（介面也已鎖住）
   if (id !== state.method) restoreDefaults(id, false); // 換方法：除了輸出格式（解析度、匯出方式、編碼）與剪輯以外都回到原本設定
   state.method = id;
   renderMethods();
@@ -1219,6 +1225,11 @@ function onModel(m) {
 // 第一次開啟就在背景把 ONNX 執行環境與全部深度模型存進本機（已存在的略過），之後選用免等待、可離線。
 function onPrefetch(m) {
   const box = $('prefetch'), bar = $('prefetchBar');
+  const cur = byId[state.method];
+  // 目前方法的模型（或共用的 ONNX 執行環境）正由預先下載負責：模型狀態也跟著顯示進度，不要停在舊的百分比
+  if (!m.done && cur.needsModel && !state.models.has(cur.model.file) && !$('modelState').hidden && (m.file.endsWith(cur.model.file) || m.file.includes('ort-wasm'))) {
+    showModelNote(`下載中… ${m.file.includes('ort-wasm') ? 'ONNX 執行環境' : cur.short + ' 模型'}（預先下載全部模型 ${(m.got / 1e6).toFixed(1)} / ${(m.total / 1e6).toFixed(0)} MB）`);
+  }
   if (!m.done) {
     box.hidden = false;
     bar.hidden = false;
@@ -1339,9 +1350,15 @@ async function exportCurrent() {
 const exportErrorText = (err) => (isReadError(err)
   ? '手機無法再讀取原片（' + err.message + '）。請按「開啟影片／照片」重新選一次這支影片再匯出。'
   : err.message);
+const exportLocked = () => {
+  const out = $('export').closest('.card');
+  return [...document.querySelectorAll('.panel > .card, .mode, #compare')].filter((el) => el !== out && !el.classList.contains('about')).concat(out.querySelector('.controls'));
+};
 /** 匯出中：鎖住會改變素材的按鈕 */
 function exportUi(on) {
   exporting = on;
+  // 匯出時鎖住方法與所有設定：逐格匯出、多部匯出每一格都讀目前的設定，中途改了會前後不一致
+  for (const el of exportLocked()) el.inert = on;
   if (!on) setTimeout(applyLocalCopy, 0); // 匯出時複製完成的副本：現在換上
   $('prog').hidden = !on;
   if (on) $('prog').value = 0;

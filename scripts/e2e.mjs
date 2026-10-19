@@ -129,7 +129,10 @@ try {
   // 示範匯出 MP4（色彩平衡融合）
   await pick('ancuti');
   await waitIdle();
+  const lockOn = page.waitForFunction(() => document.getElementById('methods').closest('.card').inert && document.getElementById('mix').closest('.controls').inert, null, { timeout: 30000 }).then(() => true, () => false);
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 300000 }), page.click('#export')]);
+  ok(await lockOn, '匯出中鎖住方法與設定');
+  ok(await page.waitForFunction(() => !document.getElementById('methods').closest('.card').inert && !document.getElementById('mix').closest('.controls').inert && !document.getElementById('cancel').closest('.card').inert, null, { timeout: 10000 }).then(() => true, () => false), '匯出結束解除鎖定（取消鈕所在卡片不鎖）');
   const demoMp4 = join(TMP, 'demo-export.mp4');
   await dl.saveAs(demoMp4);
   const info = execFileSync('ffprobe', ['-v', 'error', '-count_frames', '-show_entries', 'stream=codec_name,width,height,nb_read_frames', '-of', 'compact', demoMp4]).toString().trim();
