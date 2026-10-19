@@ -3,6 +3,7 @@
 // 無頭 Chromium 用 SwiftShader（CPU 模擬的 Vulkan）提供 WebGPU：只驗證正確性與「GPU 失敗時改用 CPU」的流程，速度不代表真的 GPU。
 import { chromium } from 'playwright';
 import { serve } from './serve.mjs';
+import { byId } from '../lib/methods/index.js';
 const ids = (process.argv[2] || 'fiveaplus,nu2net,uiec2net,waternet,fgdpa,uvenet,uwcnn,funie').split(',');
 const port = 8960 + Math.floor(Math.random() * 30), server = await serve(port);
 const GPU = ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader', '--disable-vulkan-surface'];
@@ -15,13 +16,13 @@ async function run(args, gpu) {
   page.on('pageerror', (e) => errors.push(e.message));
   if (process.env.DEBUG) page.on('console', (m) => console.log('[console]', m.type(), m.text().slice(0, 200)));
   await page.addInitScript((g) => localStorage.setItem('watertool', JSON.stringify({ ui: { gpu: g } })), gpu);
-  await page.goto(`http://localhost:${port}/`);
+  await page.goto(`http://localhost:${port}/?modelVariant=webgpu`); // CPU 也用 fp16 模型檔：GPU 與 CPU 比對同一個檔案
   await page.waitForFunction(() => window.__watertool);
   await page.evaluate(() => window.__watertool.setWatchdog(900000));
   const out = {};
   for (const id of ids) {
     // 同一張合成畫面（固定），直接交給背景執行緒處理
-    out[id] = await page.evaluate(async (id) => {
+    out[id] = await page.evaluate(async ([id, file]) => {
       const W = window.__watertool, w = 320, h = 180, rgba = new Uint8ClampedArray(w * h * 4);
       for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
         const i = (y * w + x) * 4;
@@ -29,8 +30,8 @@ async function run(args, gpu) {
       }
       const t0 = performance.now();
       const r = await W.call({ type: 'process', slot: 'export', rgba: rgba.buffer, w, h, opts: { method: id, params: undefined, mix: 1, post: 0 } });
-      return { px: Array.from(new Uint8ClampedArray(r.rgba)), ms: performance.now() - t0, backend: W.state.backend };
-    }, id);
+      return { px: Array.from(new Uint8ClampedArray(r.rgba)), ms: performance.now() - t0, backend: W.state.backends?.[file] ?? W.state.backend };
+    }, [id, byId[id].model.file]);
   }
   let toggled = null;
   if (gpu) { // 關掉「GPU 加速」：背景執行緒重新啟動，之後用 CPU

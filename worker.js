@@ -33,7 +33,7 @@ const loading = new Map(); // 模型檔 → Promise
 let runtime = null;
 // 深度模型的執行方式：'webgpu'（裝置支援 WebGPU 時用 GPU，不支援的運算子自動回到 CPU）或 'wasm'（CPU）。
 // App 的設定可以關掉 GPU（訊息 config）；第一次載入模型前決定，之後要換就重新啟動背景執行緒。
-let gpuWanted = true, backend = null;
+let gpuWanted = true, backend = null, forceVariant = null; // forceVariant：測試用，CPU 也載入 GPU 用的 fp16 版（比對 GPU 與 CPU 用同一個檔案）
 async function pickBackend() {
   if (backend) return backend;
   backend = 'wasm';
@@ -139,7 +139,7 @@ async function importRuntime(url) {
 
 /** 模型識別名（原版檔名，App 各處用它）→ 這個執行方式實際下載的檔案（CPU：int8；GPU：fp16） */
 const specOf = (file) => METHODS.find((m) => m.model?.file === file);
-const actualFile = (file) => { const m = specOf(file); return m ? modelFile(m.model, backend || 'wasm') : { file, mb: 0 }; };
+const actualFile = (file) => { const m = specOf(file); return m ? modelFile(m.model, forceVariant || backend || 'wasm') : { file, mb: 0 }; };
 
 function loadModel(file) {
   if (loading.has(file)) return loading.get(file);
@@ -281,6 +281,7 @@ async function handle(e) {
       if (m.slot !== 'export') lastFit = null;
     } else if (m.type === 'config') {
       if (!backend) gpuWanted = m.gpu !== false; // 已經載入執行環境就不改（App 會重新啟動背景執行緒）
+      if (m.variant === 'webgpu' || m.variant === 'wasm') forceVariant = m.variant;
     } else if (m.type === 'loadModel') {
       await loadModel(m.file).catch(() => {});
     } else if (m.type === 'process') {

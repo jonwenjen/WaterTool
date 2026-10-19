@@ -46,7 +46,8 @@ function startWorker() {
   worker.onmessage = onWorkerMessage;
   worker.onerror = (e) => showError('背景執行緒錯誤：' + (e.message || e));
   // 深度模型用 GPU（WebGPU）或 CPU：要在載入任何模型之前告訴背景執行緒
-  worker.postMessage({ type: 'config', gpu: gpuSetting() });
+  // ?modelVariant=webgpu：測試用（scripts/webgpu-check.mjs），CPU 也載入 GPU 用的 fp16 模型檔，兩者用同一個檔案比對
+  worker.postMessage({ type: 'config', gpu: gpuSetting(), variant: new URLSearchParams(location.search).get('modelVariant') });
 }
 /** 「深度模型用 GPU 加速」：畫面還沒建好時讀存檔（預設開） */
 function gpuSetting() {
@@ -1237,6 +1238,7 @@ function onModel(m) {
   if (m.state === 'ready') state.models.add(m.file);
   if (m.backend) {
     state.backend = m.backend;
+    (state.backends ??= {})[m.file] = m.backend; // 每個模型各自的執行方式（GPU 自我檢查不通過的模型會改用 CPU）
     $('gpuNote').textContent = m.backend === 'webgpu' ? '深度模型目前用 GPU（WebGPU）計算。'
       : m.fallback ? '這台裝置的 GPU 算出的結果有問題，已自動改用 CPU。'
         : $('gpuOn').checked ? '這台裝置的瀏覽器不支援 WebGPU，深度模型用 CPU 計算。' : '深度模型用 CPU 計算。';
