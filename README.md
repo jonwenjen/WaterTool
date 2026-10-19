@@ -66,6 +66,8 @@ node scripts/net-speed.mjs --extra > s.json && node scripts/mobile-report.mjs --
      其他方法第一次選用時才下載。瀏覽器回報是行動網路、2G／3G 或開了省數據時，不自動下載（選用時才下載）。
    - **GPU 加速（WebGPU）**：裝置支援 WebGPU 時，深度模型改在 GPU 上算（「輸出」裡可關掉）；不支援就用 CPU（WASM）。
      GPU 版的執行環境較大（27 MB，CPU 版 14 MB），只有支援 WebGPU 的裝置才下載。
+   - **模型量化**：CPU 載入 int8 版（快 1.8–2.7 倍、檔案約 1/4–3/4），GPU 載入 fp16 版（檔案小一半）；輸出和原版差 43–96 dB（看不出差別），
+     見 [`docs/results-video.md`](docs/results-video.md)「模型量化」。例：NU²-Net 12 MB → CPU 版 3 MB、每格 1.6 → 0.9 秒。
      少數裝置的 WebGPU 會算錯、而且數值看起來正常，所以每個模型第一次用 GPU 載入時，先算一張固定測試畫面，
      和預先用 CPU 算好的結果比對（[`lib/methods/gpu-ref.js`](lib/methods/gpu-ref.js)）；不符就這個模型改用 CPU。
      測試：`node scripts/webgpu-check.mjs`（無頭 Chromium 用 SwiftShader 模擬 WebGPU，比對 GPU 與 CPU 的結果；只驗證正確性，速度不代表真的 GPU）。
@@ -513,6 +515,10 @@ tools/perceptual.py               LPIPS（AlexNet v0.1）與 FID（InceptionV3�
 tools/lpips_weights.py            LPIPS 權重轉換（只讀 numpy 陣列的安全 pickle 讀取）；scripts/get_perceptual_weights.sh 下載權重
 scripts/euvp-dump.mjs             EUVP 各方法輸出存檔（給 LPIPS）；bench-video.mjs --dump 存影片輸出
 scripts/export_mobile_onnx.py     新模型（MobileIE、FGDPA、LU2Net、LiteEnhanceNet、AquaFastNet、PIC-UIE、Shallow-UWnet、U-shape、UnDIVE、DM-UW）→ ONNX，與原作比對
+scripts/webgpu-check.mjs          GPU（WebGPU）與 CPU 算出的深度模型結果是否相同、自我檢查不通過時改用 CPU、GPU 開關
+scripts/sw-check.mjs              Service Worker：離線可開、快取優先、新版整批更新；stamp-sw.mjs 部署前檢查離線清單並標記版本
+scripts/export-methods.mjs        用 App 依序以各方法匯出同一支影片（給 export-identity-check.mjs 比對）
+scripts/quantize_models.py        App 深度模型的量化版（CPU：int8；GPU：fp16），quant-check.mjs／quant-speed.mjs 檢查畫質與速度；gpu-ref.mjs 產生 GPU 自我檢查指紋
 scripts/export_restoration_onnx.py 通用還原模型（PromptIR、AdaIR、MoCE-IR、InstructIR、DehazeFormer、OneRestore、ICELUT）→ ONNX，與原作比對
 lib/methods/mobile-nets.js        上述模型的評測用設定（不在 App 清單）；net-speed.mjs、mobile-report.mjs、dump-scores.mjs、dump-video-scores.mjs 為評測工具
 tools/uvenet_infer.py             UVENet（5 格輸入）原生推論，輸出給 bench-video.mjs --pre
